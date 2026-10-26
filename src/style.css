@@ -141,7 +141,11 @@ input[type="text"] {
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--line);
-  min-height: 220px;
+  min-height: 160px;
+}
+
+#result-canvas {
+  background: #1b1e16;
 }
 
 .stage video,

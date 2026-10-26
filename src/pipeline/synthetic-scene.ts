@@ -56,27 +56,31 @@ export function drawSyntheticScene(canvas: HTMLCanvasElement): void {
   canvas.height = SYNTHETIC_SCENE.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2d context unavailable");
-  ctx.fillStyle = "#1b1e16";
+  ctx.fillStyle = "#2a2d22";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#3a3224";
-  ctx.fillRect(0, SYNTHETIC_SCENE.tableTopY, SYNTHETIC_SCENE.edgeX, canvas.height);
-  ctx.fillStyle = "#c4a36a";
+  ctx.fillStyle = "#7a6240";
+  ctx.fillRect(0, SYNTHETIC_SCENE.tableTopY, SYNTHETIC_SCENE.edgeX, canvas.height - SYNTHETIC_SCENE.tableTopY);
+  ctx.fillStyle = "#5a4a30";
+  ctx.fillRect(0, SYNTHETIC_SCENE.tableTopY, SYNTHETIC_SCENE.edgeX, 10);
+  ctx.fillStyle = "#e6c27a";
   ctx.fillRect(
     SYNTHETIC_SCENE.object.x0,
     SYNTHETIC_SCENE.object.y0,
     SYNTHETIC_SCENE.object.x1 - SYNTHETIC_SCENE.object.x0,
     SYNTHETIC_SCENE.object.y1 - SYNTHETIC_SCENE.object.y0,
   );
-  ctx.strokeStyle = "#e3b23c";
+  ctx.strokeStyle = "#5a3f18";
   ctx.lineWidth = 2;
+  ctx.strokeRect(
+    SYNTHETIC_SCENE.object.x0,
+    SYNTHETIC_SCENE.object.y0,
+    SYNTHETIC_SCENE.object.x1 - SYNTHETIC_SCENE.object.x0,
+    SYNTHETIC_SCENE.object.y1 - SYNTHETIC_SCENE.object.y0,
+  );
+  ctx.strokeStyle = "#e3b23c";
+  ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(SYNTHETIC_SCENE.edgeX, 40);
   ctx.lineTo(SYNTHETIC_SCENE.edgeX, canvas.height - 20);
   ctx.stroke();
-  ctx.fillStyle = "#e3b23c";
-  ctx.font = "700 18px ui-sans-serif, system-ui, sans-serif";
-  ctx.fillText("SYNTHETIC", 16, 36);
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.fillStyle = "#c9c3b0";
-  ctx.fillText("not a camera frame · not a SAM result", 16, 56);
 }

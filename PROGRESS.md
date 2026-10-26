@@ -12,6 +12,11 @@ API 키 없음 — 민우가 Cursor 클라우드 에이전트 Secrets(MODEL_API_
 - `GET /v1/models`, `muse-wonder-1.0`, SAM, Baseten는 키가 없어 호출하지 않음. 가짜 응답 없음.
 - 공식 문서에서 다시 확인: Wonder/Wonder Full은 한국에서 Model API·Muse Code 모두 불가(https://dev.meta.ai/docs/models).
 - DECISIONS-SEED를 DECISIONS.md에 원문 그대로 옮김.
+- `npm test`: 12파일 / 28테스트 통과. `npm run lint` 통과. `npm run build` 통과 (Vite 8.3.5, JS 18.27 kB).
+- 로컬 서버에서 실측:
+  - `GET /api/status` → `modelApiKeyConfigured: false`, `basetenApiKeyConfigured: false`
+  - `POST /api/sam` → 503, 원문 오류: `MODEL_API_KEY / META_API_KEY is not configured. Refusing to invent a model result.`
+  - Chrome 390×844에서 **Load synthetic example** 클릭 후 카드: `d = 0.1100 m`, now unstable `no`, P(unstable) `0.0%`, MC std(d) `0.0021 m`. SAM 버튼 disabled. 캔버스 비트맵 390×520.
 
 ### 막힌 일
 - 실제 SAM·Wonder·Spark Open 호출 검사 불가(키 없음).

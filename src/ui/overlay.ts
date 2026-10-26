@@ -9,14 +9,14 @@ export type OverlayInput = {
 };
 
 export function drawOverlay(canvas: HTMLCanvasElement, input: OverlayInput): void {
-  const width = "width" in input.image && !(input.image instanceof HTMLImageElement)
-    ? input.image.width
-    : input.image instanceof HTMLImageElement
+  const width =
+    input.image instanceof HTMLImageElement
       ? input.image.naturalWidth
       : input.image.width;
-  const height = input.image instanceof HTMLImageElement
-    ? input.image.naturalHeight
-    : input.image.height;
+  const height =
+    input.image instanceof HTMLImageElement
+      ? input.image.naturalHeight
+      : input.image.height;
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
@@ -75,6 +75,11 @@ export function drawOverlay(canvas: HTMLCanvasElement, input: OverlayInput): voi
   ctx.arc(edgeX, com.y, radius, -Math.PI / 2, Math.PI / 2, false);
   ctx.stroke();
 
-  ctx.fillStyle = "rgba(224, 122, 95, 0.18)";
-  ctx.fillRect(Math.max(edgeX, 0), 0, width - edgeX, height);
+  ctx.fillStyle = "rgba(224, 122, 95, 0.28)";
+  ctx.fillRect(Math.max(edgeX, 0), 0, Math.max(0, width - edgeX), height);
+
+  ctx.fillStyle = "#f4efe4";
+  ctx.font = "700 14px ui-monospace, monospace";
+  const label = `d = ${input.result.d.value.toFixed(3)} m`;
+  ctx.fillText(label, Math.min(com.x, edgeX) + 8, com.y - 10);
 }

@@ -36,7 +36,11 @@ export default defineConfig({
                 method === "GET" || method === "HEAD"
                   ? undefined
                   : await collectBody(req);
-              const request = new Request(url, { method, headers, body });
+              const request = new Request(url, {
+                method,
+                headers,
+                body: body ? new Uint8Array(body) : undefined,
+              });
               const response = await dispatchApi(request);
               res.statusCode = response.status;
               response.headers.forEach((value, key) => {

@@ -1,4 +1,8 @@
-import { extractOutputTextFromResponsesSse, parseSamOutput } from "../src/sam/parser.ts";
+import {
+  extractOutputTextFromResponsesSse,
+  parseSamOutput,
+  type SamRecord,
+} from "../src/sam/parser.ts";
 import { keyPresence } from "./keys.ts";
 import {
   buildSam31ImageRequest,
@@ -89,7 +93,7 @@ export async function handleSam(request: Request): Promise<Response> {
   }
   const extracted = extractOutputTextFromResponsesSse(result.bodyText);
   const outputText = extracted.outputText || result.bodyText;
-  let records = [];
+  let records: SamRecord[];
   try {
     records = parseSamOutput(outputText);
   } catch (error) {
