@@ -42,6 +42,7 @@ function syntheticHazard(): Hazard {
       samplesM: Array.from(mc.samples),
       iterations: mc.iterations,
       seed: mc.seed,
+      gravitySource: "synthetic",
       gravityTiltDeg: 0,
       shiftWithoutGravityM: 0,
       comHeightAboveEdgeM: 0.06,

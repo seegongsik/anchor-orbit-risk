@@ -108,9 +108,11 @@ function measurementLines(hazardId: string, results: ToolResult[]): ResolvedRow[
   }
   const drop = last("drop_energy");
   if (drop) {
+    const source = String(drop.result.height_source);
+    const ko = source === "measured" ? "측정" : source === "assumption" ? "가정" : "시나리오";
     lines.push({
-      label: { en: "Drop height", ko: "낙하 높이" },
-      value: `${formatLength(Number(drop.result.drop_height_m))} (${String(drop.result.height_source)})`,
+      label: { en: `Drop height (${source})`, ko: `낙하 높이(${ko})` },
+      value: formatLength(Number(drop.result.drop_height_m)),
     });
     lines.push({
       label: { en: "Impact speed", ko: "충돌 속도" },

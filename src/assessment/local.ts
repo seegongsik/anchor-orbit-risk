@@ -3,6 +3,7 @@
  * template text, checked by the same number checker. Used when no model key is
  * configured, and as a baseline to compare the agent against.
  */
+import type { Nudges } from "../risk/assess.js";
 import type { AssessmentTable } from "../risk/table.js";
 import { checkSubmission } from "./checker.js";
 import { ToolBox } from "./tools.js";
@@ -91,10 +92,15 @@ function unmeasuredRow(h: Hazard): Row {
 
 export function localAssessment(
   hazards: Hazard[],
-  context: { place: string; createdAt: string },
+  context: { place: string; createdAt: string; nudges?: Nudges },
 ): { table: AssessmentTable; results: ToolBox["results"] } {
-  const box = new ToolBox(hazards);
-  const usedSam = hazards.some((h) => h.measurement?.maskSource === "sam-3.1");
+  const box = new ToolBox(hazards, context.nudges);
+  const sources = new Set(hazards.map((h) => h.measurement?.maskSource).filter(Boolean));
+  const models = sources.has("sam-3.1")
+    ? ["sam-3.1"]
+    : sources.has("synthetic")
+      ? ["no model: synthetic scene"]
+      : ["no model: masks drawn by hand"];
   const rows = hazards.map((h) =>
     h.measurement?.type === "edge" ? edgeRow(box, h) : h.measurement?.type === "ladder" ? ladderRow(box, h) : unmeasuredRow(h),
   );
@@ -106,7 +112,7 @@ export function localAssessment(
         ko: "에이전트 없이 계산함: 같은 도구 위에 고정 문장을 씀.",
       },
     },
-    { results: box.results, hazards, place: context.place, createdAt: context.createdAt, models: usedSam ? ["sam-3.1"] : ["no model: masks drawn by hand"] },
+    { results: box.results, hazards, place: context.place, createdAt: context.createdAt, models },
   );
   if (!outcome.ok) throw new Error(`local assessment failed the checker: ${outcome.problems.join("; ")}`);
   return { table: outcome.table, results: box.results };

@@ -4,6 +4,9 @@ import type { Text } from "../risk/config.js";
 
 export type MaskSource = "sam-3.1" | "manual" | "synthetic";
 
+/** Where the plumb line came from. Only "sensor" is a measurement of gravity. */
+export type GravitySource = "sensor" | "image vertical (assumed)" | "synthetic";
+
 /** What the phone measured for an object resting near a support edge. */
 export type EdgeMeasurement = {
   type: "edge";
@@ -16,6 +19,7 @@ export type EdgeMeasurement = {
   samplesM: number[];
   iterations: number;
   seed: number;
+  gravitySource: GravitySource;
   gravityTiltDeg: number;
   shiftWithoutGravityM: number;
   comHeightAboveEdgeM: number;
@@ -32,6 +36,7 @@ export type LadderMeasurement = {
   type: "ladder";
   angleFromGroundDeg: number;
   angleStdDeg: number;
+  gravitySource: GravitySource;
   gravityTiltDeg: number;
   /** Measured height of the top contact above the foot, or null. */
   topHeightM: number | null;

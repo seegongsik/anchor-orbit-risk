@@ -3,7 +3,7 @@
  * object mask, the anchor (support edge) from the support mask or a tap, the
  * plumb line from the phone's gravity, the scale from a known length.
  */
-import type { EdgeMeasurement, LadderMeasurement, MaskSource } from "../assessment/types.js";
+import type { EdgeMeasurement, GravitySource, LadderMeasurement, MaskSource } from "../assessment/types.js";
 import { MONTE_CARLO_ITERATIONS, MONTE_CARLO_SEED } from "../physics/constants.js";
 import { degToRad, dot, radToDeg, type Vec2 } from "../physics/geometry.js";
 import { maskCentroid, maskExtent, type BinaryMask } from "../physics/mask.js";
@@ -42,6 +42,7 @@ export type EdgeMarks = {
   imageWidth: number;
   imageHeight: number;
   plumb: Plumb;
+  gravitySource: GravitySource;
   /** Spread of the averaged gravity direction, radians (0 if unknown). */
   gravityNoiseRad: number;
   object: BinaryMask;
@@ -104,13 +105,18 @@ export function measureEdge(marks: EdgeMarks): EdgeResult {
   const sigma: MarginSigma = {
     comPx: objectWidthPx * Math.hypot(maskRel, densityRel) + 0.5,
     edgePx: edgeSource === "manual" ? 5 : 3,
-    gravityRad: Math.hypot(degToRad(0.5), marks.gravityNoiseRad),
+    gravityRad:
+      marks.gravitySource === "image vertical (assumed)"
+        ? degToRad(3)
+        : Math.hypot(degToRad(0.5), marks.gravityNoiseRad),
     scaleRel: marks.scale.relSigma,
   };
   notes.push(
     `Centre of mass: area centroid of the ${marks.objectSource} mask, uniform density assumed; σ = ${sigma.comPx.toFixed(1)} px (mask ${maskRel * 100}% and density ${densityRel * 100}% of the object width, assumptions).`,
     `Edge: ${edgeSource === "manual" ? "tapped by hand" : "corner of the support mask"}; σ = ${sigma.edgePx} px (assumption).`,
-    `Gravity: σ = ${radToDeg(sigma.gravityRad).toFixed(2)}° (0.5° sensor accuracy assumed, plus the measured spread).`,
+    marks.gravitySource === "image vertical (assumed)"
+      ? `Gravity: no sensor reading; the photo's vertical is assumed to be the plumb line, σ = 3° (assumption).`
+      : `Gravity: ${marks.gravitySource}; σ = ${radToDeg(sigma.gravityRad).toFixed(2)}° (0.5° sensor accuracy assumed, plus the measured spread).`,
   );
 
   const base = edgeMargin({ com, edge, supportPoint, plumb: marks.plumb, metersPerPixel: marks.scale.metersPerPixel });
@@ -147,6 +153,7 @@ export function measureEdge(marks: EdgeMarks): EdgeResult {
     samplesM: Array.from(mc.samples, (s) => Number(s.toPrecision(5))),
     iterations: mc.iterations,
     seed: mc.seed,
+    gravitySource: marks.gravitySource,
     gravityTiltDeg: imageTiltDeg(marks.plumb),
     shiftWithoutGravityM: shift,
     comHeightAboveEdgeM: base.comHeightAboveEdgePx * marks.scale.metersPerPixel,
@@ -177,6 +184,7 @@ export function measureLadder(input: {
   foot: Vec2;
   top: Vec2;
   plumb: Plumb;
+  gravitySource: GravitySource;
   gravityNoiseRad: number;
   scale?: Scale;
   maskSource: MaskSource;
@@ -193,6 +201,7 @@ export function measureLadder(input: {
     type: "ladder",
     angleFromGroundDeg,
     angleStdDeg,
+    gravitySource: input.gravitySource,
     gravityTiltDeg: imageTiltDeg(input.plumb),
     topHeightM,
     maskSource: input.maskSource,

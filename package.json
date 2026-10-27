@@ -12,7 +12,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "check:api": "node scripts/check-api.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

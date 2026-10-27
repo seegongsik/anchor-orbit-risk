@@ -32,6 +32,7 @@ describe("edge measurement on the synthetic scene", () => {
       imageWidth: scene.width,
       imageHeight: scene.height,
       plumb: scene.plumb,
+      gravitySource: "synthetic",
       gravityNoiseRad: 0,
       object,
       objectSource: "synthetic",
@@ -59,6 +60,7 @@ describe("edge measurement on the synthetic scene", () => {
       imageWidth: scene.width,
       imageHeight: scene.height,
       plumb: scene.plumb,
+      gravitySource: "synthetic",
       gravityNoiseRad: 0,
       object,
       objectSource: "synthetic",
@@ -81,7 +83,7 @@ describe("edge measurement on the synthetic scene", () => {
       { place: "synthetic", createdAt: "2026-10-27" },
     );
     expect(table.rows[0].risk).not.toBeNull();
-    expect(table.rows[0].measurements.some((x) => x.value.includes("measured"))).toBe(true);
+    expect(table.rows[0].measurements.some((x) => x.label.en.includes("measured"))).toBe(true);
   });
 });
 
@@ -92,6 +94,7 @@ describe("ladder measurement (synthetic)", () => {
       foot: { x: 100, y: 900 },
       top: { x: 300, y: 100 },
       plumb,
+      gravitySource: "synthetic",
       gravityNoiseRad: 0,
       maskSource: "manual",
     });

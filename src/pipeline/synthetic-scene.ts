@@ -117,13 +117,4 @@ export function drawSyntheticScene(canvas: HTMLCanvasElement, scene: SyntheticSc
   for (const poly of scene.supportPolygons) fillPoly(ctx, poly, "#6b4f35");
   fillPoly(ctx, scene.a4Polygon, "#fbfbf6");
   fillPoly(ctx, scene.objectPolygon, "#c8553d");
-  ctx.save();
-  ctx.translate(centre.x, centre.y);
-  ctx.rotate(degToRad(s.rollDeg));
-  ctx.fillStyle = "#1b1b1b";
-  ctx.font = "bold 34px system-ui, sans-serif";
-  ctx.fillText("SYNTHETIC", -centre.x + 40, -centre.y + 70);
-  ctx.font = "22px system-ui, sans-serif";
-  ctx.fillText("A4 297 mm", s.a4.x0 - centre.x + 20, (s.a4.y0 + s.a4.y1) / 2 - centre.y);
-  ctx.restore();
 }

@@ -5,7 +5,7 @@ import { listModels, MUSE_SPARK_OPEN_MODEL, SAM_MODEL, VERCEL_BODY_LIMIT_BYTES }
 import { SamUpstreamError, segmentImage, type SamPrompt } from "./sam.js";
 import { SparkError, sparkChat, type ToolSpec } from "./spark.js";
 import { surveyScene } from "./survey.js";
-import { imageDataUrl, InputError, sanitizeHazards } from "./validate.js";
+import { imageDataUrl, InputError, sanitizeHazards, sanitizeNudges } from "./validate.js";
 
 const NO_MODEL_KEY = "MODEL_API_KEY / META_API_KEY is not configured on the server. No model result is invented.";
 const NO_BASETEN_KEY = "BASETEN_API_KEY is not configured on the server. No model result is invented.";
@@ -140,9 +140,11 @@ export async function handleAssess(request: Request): Promise<Response> {
   let hazards;
   let image: string | undefined;
   let place = "";
+  let nudges;
   try {
     const body = await readJson(request);
     hazards = sanitizeHazards(body.hazards);
+    nudges = sanitizeNudges(body.nudges);
     image = imageDataUrl(body.imageDataUrl, false);
     place = typeof body.place === "string" ? body.place.slice(0, 80) : "";
   } catch (error) {
@@ -156,7 +158,7 @@ export async function handleAssess(request: Request): Promise<Response> {
       const send = (event: TraceEvent) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       try {
         await runAssessment(
-          { hazards, place, imageDataUrl: image, models: [SAM_MODEL, MUSE_SPARK_OPEN_MODEL] },
+          { hazards, place, imageDataUrl: image, models: [SAM_MODEL, MUSE_SPARK_OPEN_MODEL], nudges },
           { chat: (req) => sparkChat(req), onEvent: send },
         );
       } catch (error) {

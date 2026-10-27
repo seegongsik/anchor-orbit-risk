@@ -77,17 +77,37 @@ export const RISK_LEVELS: Band[] = [
 export const MATRIX = { likelihoodLevels: 5, severityLevels: 4 } as const;
 
 /**
- * Default nudging assumptions for the fall model. A supervisor edits these per
- * place: a busy shared desk is not a storage shelf.
+ * How often an object gets nudged, chosen by the supervisor for the place.
+ * All three presets are assumptions, not measurements.
  */
-export const DEFAULT_NUDGES = {
-  nudgesPerDay: 10,
-  nudgeStdM: 0.005,
-  horizonDays: 30,
-  note: {
-    en: "Assumption: about ten small nudges a day, each moving the object a few millimetres, over thirty days.",
-    ko: "가정: 하루 열 번쯤 살짝 밀리고, 한 번에 몇 mm씩 움직이며, 30일 동안.",
+export const NUDGE_PRESETS = [
+  {
+    id: "rare",
+    label: { en: "Rarely touched (shelf, storage)", ko: "거의 안 건드림(선반, 보관)" },
+    nudgesPerDay: 0.5,
+    nudgeStdM: 0.003,
   },
+  {
+    id: "desk",
+    label: { en: "Everyday desk", ko: "평소 쓰는 책상" },
+    nudgesPerDay: 2,
+    nudgeStdM: 0.003,
+  },
+  {
+    id: "busy",
+    label: { en: "Busy shared bench", ko: "여럿이 쓰는 작업대" },
+    nudgesPerDay: 10,
+    nudgeStdM: 0.005,
+  },
+] as const;
+
+export type NudgePresetId = (typeof NUDGE_PRESETS)[number]["id"];
+
+/** Default nudging assumptions for the fall model: the everyday desk preset over thirty days. */
+export const DEFAULT_NUDGES = {
+  nudgesPerDay: 2,
+  nudgeStdM: 0.003,
+  horizonDays: 30,
 } as const;
 
 /** Default drop height when none is measured. Assumption (a common desk height). */

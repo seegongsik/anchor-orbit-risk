@@ -100,11 +100,11 @@ function clampAssumption(value: unknown, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, value));
 }
 
-function nudgesFrom(args: Record<string, unknown>): { nudges: Nudges; custom: boolean } {
+function nudgesFrom(args: Record<string, unknown>, defaults: Nudges): { nudges: Nudges; custom: boolean } {
   const nudges = {
-    nudgesPerDay: clampAssumption(args.nudges_per_day, DEFAULT_NUDGES.nudgesPerDay, 0, 1000),
-    nudgeStdM: clampAssumption(args.nudge_std_m, DEFAULT_NUDGES.nudgeStdM, 0, 0.1),
-    horizonDays: clampAssumption(args.horizon_days, DEFAULT_NUDGES.horizonDays, 1, 3650),
+    nudgesPerDay: clampAssumption(args.nudges_per_day, defaults.nudgesPerDay, 0, 1000),
+    nudgeStdM: clampAssumption(args.nudge_std_m, defaults.nudgeStdM, 0, 0.1),
+    horizonDays: clampAssumption(args.horizon_days, defaults.horizonDays, 1, 3650),
   };
   const custom =
     args.nudges_per_day !== undefined || args.nudge_std_m !== undefined || args.horizon_days !== undefined;
@@ -112,7 +112,7 @@ function nudgesFrom(args: Record<string, unknown>): { nudges: Nudges; custom: bo
 }
 
 function nudgeText(n: Nudges, custom: boolean): Text {
-  const who = custom ? { en: "chosen by the agent", ko: "에이전트가 정함" } : { en: "default", ko: "기본값" };
+  const who = custom ? { en: "chosen by the agent", ko: "에이전트가 정함" } : { en: "set for this place", ko: "이 장소에 맞춰 정함" };
   return {
     en: `Assumption (${who.en}): ${n.nudgesPerDay} nudges a day, ${(n.nudgeStdM * 1000).toFixed(1)} mm each (std), over ${n.horizonDays} days.`,
     ko: `가정(${who.ko}): 하루 ${n.nudgesPerDay}번 밀림, 한 번에 표준편차 ${(n.nudgeStdM * 1000).toFixed(1)} mm, ${n.horizonDays}일 동안.`,
@@ -122,9 +122,11 @@ function nudgeText(n: Nudges, custom: boolean): Text {
 export class ToolBox {
   readonly results: ToolResult[] = [];
   private readonly hazards: Map<string, Hazard>;
+  private readonly nudgeDefaults: Nudges;
 
-  constructor(hazards: Hazard[]) {
+  constructor(hazards: Hazard[], nudgeDefaults: Nudges = DEFAULT_NUDGES) {
     this.hazards = new Map(hazards.map((h) => [h.id, h]));
+    this.nudgeDefaults = nudgeDefaults;
   }
 
   hazardIds(): string[] {
@@ -181,6 +183,7 @@ export class ToolBox {
             d_p5_m: m.dP5M,
             d_p95_m: m.dP95M,
             p_unstable_now: m.pUnstableNow,
+            gravity_source: m.gravitySource,
             gravity_tilt_deg: m.gravityTiltDeg,
             margin_shift_without_gravity_m: m.shiftWithoutGravityM,
             com_height_above_edge_m: m.comHeightAboveEdgeM,
@@ -190,10 +193,15 @@ export class ToolBox {
             scale_source: m.scaleSource,
           },
           [
-            {
-              en: `Measured from the photo with the phone's gravity vector (${m.maskSource} mask, scale: ${m.scaleSource}). Uniform density unless noted.`,
-              ko: `휴대폰 중력 벡터로 사진에서 잼(${m.maskSource} 마스크, 축척: ${m.scaleSource}). 따로 적지 않으면 밀도는 균일하다고 가정.`,
-            },
+            m.gravitySource === "sensor"
+              ? {
+                  en: `Measured from the photo with the phone's gravity vector (${m.maskSource} mask, scale: ${m.scaleSource}). Uniform density assumed.`,
+                  ko: `휴대폰 중력 벡터로 사진에서 잼(${m.maskSource} 마스크, 축척: ${m.scaleSource}). 밀도는 균일하다고 가정.`,
+                }
+              : {
+                  en: `Gravity source: ${m.gravitySource}; the plumb line is not a sensor reading (${m.maskSource} mask, scale: ${m.scaleSource}).`,
+                  ko: `중력 출처: ${m.gravitySource === "synthetic" ? "합성 장면" : "사진의 세로축을 가정"}. 센서 측정이 아님(${m.maskSource} 마스크, 축척: ${m.scaleSource}).`,
+                },
           ],
           h.id,
         );
@@ -201,7 +209,7 @@ export class ToolBox {
       case "fall_probability": {
         const h = this.hazard(args.hazard_id);
         const m = this.edge(h);
-        const { nudges, custom } = nudgesFrom(args);
+        const { nudges, custom } = nudgesFrom(args, this.nudgeDefaults);
         const p = fallProbabilityFromSamples(m.samplesM, nudges);
         const band = likelihoodGrade(p);
         return this.record(
@@ -350,7 +358,7 @@ export class ToolBox {
         const h = this.hazard(args.hazard_id);
         const m = this.edge(h);
         const target = clampAssumption(args.target_probability, 0.001, 1e-6, 0.5);
-        const { nudges, custom } = nudgesFrom(args);
+        const { nudges, custom } = nudgesFrom(args, this.nudgeDefaults);
         const required = requiredMargin(target, nudges);
         const moveBy = Math.max(0, required - m.dP5M);
         const band = likelihoodGrade(target);

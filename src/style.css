@@ -219,3 +219,311 @@ h2 {
   font-size: 0.75rem;
   color: var(--muted);
 }
+
+/* Takeover UI (2026-10-27). */
+.kicker {
+  margin: 10px 0 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+h2 span {
+  display: inline-grid;
+  place-items: center;
+  width: 1.6em;
+  height: 1.6em;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #12140f;
+  font-size: 0.85rem;
+}
+
+h3.sub {
+  font-size: 0.95rem;
+  margin: 16px 0 6px;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.chip {
+  font-size: 0.74rem;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.chip.on {
+  border-color: var(--moss);
+  color: #bfe3cc;
+}
+
+.chip.off {
+  color: var(--muted);
+}
+
+.seg {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.seg button {
+  flex: 1 0 auto;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-color: var(--line);
+  background: #10120d;
+  font-size: 0.86rem;
+}
+
+.seg button.on {
+  border-color: var(--gold);
+  background: #2a2414;
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.hint {
+  font-size: 0.86rem;
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #10120d;
+  border-left: 3px solid var(--sky);
+}
+
+.hint.warn {
+  border-left-color: var(--clay);
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.notes {
+  padding-left: 18px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+label.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+  color: var(--ink);
+  margin: 6px 0;
+}
+
+label.filebtn {
+  flex: 1 1 140px;
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  margin: 0;
+  border: 1px solid var(--gold);
+  background: #2a2414;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.row select {
+  flex: 1 1 140px;
+  min-height: 44px;
+}
+
+.hz,
+.cand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #10120d;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 0.88rem;
+}
+
+.hz button,
+.cand button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 4px 12px;
+}
+
+.trace {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.72rem;
+  padding-left: 18px;
+  margin: 10px 0;
+}
+
+.trace li {
+  margin: 3px 0;
+  word-break: break-word;
+}
+
+.trace li.turn {
+  color: var(--sky);
+}
+
+.trace li.ok {
+  color: #9fe0b5;
+}
+
+.trace li.bad {
+  color: #ff9d8f;
+}
+
+.trace li.mode {
+  color: var(--gold);
+}
+
+.summary {
+  font-size: 0.9rem;
+}
+
+.risk-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--moss);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+
+.risk-card.lvl-mid {
+  border-left-color: var(--gold);
+}
+
+.risk-card.lvl-high {
+  border-left-color: var(--danger);
+}
+
+.risk-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.risk-card h3 {
+  flex: 1;
+  font-size: 1rem;
+  margin: 0;
+}
+
+.risk-card .no {
+  color: var(--muted);
+}
+
+.risk-card .score {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.risk-card h4 {
+  font-size: 0.82rem;
+  margin: 10px 0 4px;
+  color: var(--muted);
+}
+
+.risk-card ol,
+.risk-card ul {
+  padding-left: 18px;
+  margin: 4px 0;
+  font-size: 0.86rem;
+}
+
+.facts {
+  list-style: none;
+  padding: 0 !important;
+}
+
+.facts li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px dashed var(--line);
+  padding: 3px 0;
+}
+
+.facts b {
+  font-family: ui-monospace, Menlo, monospace;
+  font-weight: 600;
+}
+
+.grades {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.grade {
+  background: #10120d;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 0.8rem;
+}
+
+.grade span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.grade b {
+  font-size: 1.2rem;
+  margin-right: 4px;
+}
+
+.grade small {
+  display: block;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.risk-line,
+.residual,
+.compare {
+  margin-top: 8px;
+  font-size: 0.88rem;
+}
+
+.residual {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #10120d;
+}
+
+footer {
+  margin-top: 28px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+@media (max-width: 420px) {
+  .metric .v {
+    font-size: 1rem;
+  }
+}

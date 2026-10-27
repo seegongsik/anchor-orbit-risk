@@ -2,6 +2,7 @@
 import {
   HAZARD_ID,
   type EdgeMeasurement,
+  type GravitySource,
   type Hazard,
   type LadderMeasurement,
   type MaskSource,
@@ -39,6 +40,10 @@ function vec(value: unknown, where: string) {
   return { x: finite(v.x, `${where}.x`), y: finite(v.y, `${where}.y`) };
 }
 
+function gravitySource(value: unknown): GravitySource {
+  return value === "sensor" || value === "synthetic" ? value : "image vertical (assumed)";
+}
+
 function maskSource(value: unknown): MaskSource {
   return value === "sam-3.1" || value === "synthetic" ? value : "manual";
 }
@@ -60,6 +65,7 @@ function edgeMeasurement(value: JsonRecord, where: string): EdgeMeasurement {
     samplesM: samples.map((s, i) => finite(s, `${where}.samplesM[${i}]`, -10, 10)),
     iterations: finite(value.iterations, `${where}.iterations`, 1000, 1e6),
     seed: finite(value.seed, `${where}.seed`),
+    gravitySource: gravitySource(value.gravitySource),
     gravityTiltDeg: finite(value.gravityTiltDeg, `${where}.gravityTiltDeg`, -90, 90),
     shiftWithoutGravityM: finite(value.shiftWithoutGravityM, `${where}.shiftWithoutGravityM`, -10, 10),
     comHeightAboveEdgeM: finite(value.comHeightAboveEdgeM, `${where}.comHeightAboveEdgeM`, -10, 10),
@@ -87,6 +93,7 @@ function ladderMeasurement(value: JsonRecord, where: string): LadderMeasurement 
     type: "ladder",
     angleFromGroundDeg: finite(value.angleFromGroundDeg, `${where}.angleFromGroundDeg`, 0, 90),
     angleStdDeg: finite(value.angleStdDeg, `${where}.angleStdDeg`, 0, 90),
+    gravitySource: gravitySource(value.gravitySource),
     gravityTiltDeg: finite(value.gravityTiltDeg, `${where}.gravityTiltDeg`, -90, 90),
     topHeightM: value.topHeightM === null || value.topHeightM === undefined ? null : finite(value.topHeightM, `${where}.topHeightM`, 0, 50),
     maskSource: maskSource(value.maskSource),
@@ -133,6 +140,16 @@ export function sanitizeHazards(value: unknown): Hazard[] {
     }
     return hazard;
   });
+}
+
+export function sanitizeNudges(value: unknown): { nudgesPerDay: number; nudgeStdM: number; horizonDays: number } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const n = rec(value, "nudges");
+  return {
+    nudgesPerDay: finite(n.nudgesPerDay, "nudges.nudgesPerDay", 0, 1000),
+    nudgeStdM: finite(n.nudgeStdM, "nudges.nudgeStdM", 0, 0.1),
+    horizonDays: finite(n.horizonDays, "nudges.horizonDays", 1, 3650),
+  };
 }
 
 const DATA_URL = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;

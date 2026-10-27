@@ -5,6 +5,7 @@
  * plain JSON protocol otherwise.
  */
 import type { Hazard } from "../src/assessment/types.js";
+import type { Nudges } from "../src/risk/assess.js";
 import type { AssessmentTable } from "../src/risk/table.js";
 import { checkSubmission } from "../src/assessment/checker.js";
 import { MUSE_SPARK_OPEN_MODEL } from "./meta-client.js";
@@ -133,13 +134,14 @@ export async function runAssessment(
     imageDataUrl?: string;
     createdAt?: string;
     models?: string[];
+    nudges?: Nudges;
   },
   deps: { chat: ChatFn; onEvent?: (event: TraceEvent) => void; maxTurns?: number; maxRejections?: number },
 ): Promise<AssessmentRun> {
   const emit = deps.onEvent ?? (() => {});
   const maxTurns = deps.maxTurns ?? 14;
   const maxRejections = deps.maxRejections ?? 3;
-  const box = new ToolBox(input.hazards);
+  const box = new ToolBox(input.hazards, input.nudges);
   const place = input.place ?? "";
   const createdAt = input.createdAt ?? new Date().toISOString().slice(0, 10);
   const models = input.models ?? ["sam-3.1", MUSE_SPARK_OPEN_MODEL];
@@ -149,7 +151,11 @@ export async function runAssessment(
   const userContent: ContentPart[] = [
     {
       type: "text",
-      text: `Place: ${place || "not given"}.\nHazards found in the photo (measured by the phone where noted):\n${hazardBrief(input.hazards)}\nAssess every hazard, then submit.`,
+      text: `Place: ${place || "not given"}.\nThe supervisor's nudging assumptions for this place (tool defaults): ${
+        input.nudges
+          ? `${input.nudges.nudgesPerDay} nudges a day of ${input.nudges.nudgeStdM} m std over ${input.nudges.horizonDays} days`
+          : "the built-in defaults"
+      }. Keep them unless the photo clearly contradicts them.\nHazards found in the photo (measured by the phone where noted):\n${hazardBrief(input.hazards)}\nAssess every hazard, then submit.`,
     },
   ];
   if (input.imageDataUrl) userContent.push({ type: "image_url", image_url: { url: input.imageDataUrl } });

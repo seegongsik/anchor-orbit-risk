@@ -146,7 +146,7 @@ th { background: #f2f2f2; color: #3f3f3f; }
 </head>
 <body>
 <h1>${escapeHtml(table.title[lang])}</h1>
-<div class="meta">${escapeHtml(table.place)} · ${escapeHtml(table.createdAt)} · ${escapeHtml(table.models.join(", "))}</div>
+<div class="meta">${[table.place, table.createdAt, table.models.join(", ")].filter((x) => x).map(escapeHtml).join(" · ")}</div>
 <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
 <p>${multiline(table.summary[lang])}</p>
 <div class="note">${legend(lang)}<p>${escapeHtml(LEGAL_CONTEXT[lang])}</p><p>${escapeHtml(DISCLAIMER[lang])}</p></div>
