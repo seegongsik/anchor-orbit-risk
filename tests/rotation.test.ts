@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fitCircle } from "../src/physics/rotation.ts";
+import { fitCircle } from "../src/physics/rotation.js";
 
 describe("arc fit", () => {
   it("recovers a known circle centre and radius within 1%", () => {

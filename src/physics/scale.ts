@@ -1,9 +1,9 @@
 import {
   A4_LONG_SIDE_M,
   CREDIT_CARD_LONG_SIDE_M,
-} from "./constants.ts";
-import { quantity, type Quantity } from "./quantity.ts";
-import { hypot2, type Vec2 } from "./geometry.ts";
+} from "./constants.js";
+import { quantity, type Quantity } from "./quantity.js";
+import { hypot2, type Vec2 } from "./geometry.js";
 
 export type ScalePreset = "a4-long" | "credit-card" | "custom";
 

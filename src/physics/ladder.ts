@@ -1,6 +1,6 @@
-import { LADDER_RISE_RUN } from "./constants.ts";
-import { angleBetween, radToDeg, type Vec2 } from "./geometry.ts";
-import { quantity, type Quantity } from "./quantity.ts";
+import { LADDER_RISE_RUN } from "./constants.js";
+import { angleBetween, radToDeg, type Vec2 } from "./geometry.js";
+import { quantity, type Quantity } from "./quantity.js";
 
 export type LadderAssessment = {
   angleFromGravityDeg: Quantity;

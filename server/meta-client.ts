@@ -1,4 +1,4 @@
-import { resolveBasetenApiKey, resolveModelApiKey, type EnvMap } from "./keys.ts";
+import { resolveBasetenApiKey, resolveModelApiKey, type EnvMap } from "./keys.js";
 
 export const META_API_BASE = "https://api.meta.ai/v1";
 export const BASETEN_API_BASE = "https://inference.baseten.co/v1";
@@ -79,89 +79,6 @@ export function listModels(options?: {
     { method: "GET" },
     { env: options?.env, fetchImpl: options?.fetchImpl, maxRetries: 0 },
   );
-}
-
-export type SamImageRequest = {
-  concept: string;
-  imageUrl: string;
-  includeConfidence?: boolean;
-};
-
-export function buildSam31ImageRequest(input: SamImageRequest): unknown {
-  return {
-    model: SAM_MODEL,
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content: [
-          { type: "input_text", text: input.concept },
-          { type: "input_image", image_url: input.imageUrl },
-        ],
-      },
-    ],
-    stream: true,
-    metadata: {
-      mask_encoding: "one_bit",
-      ...(input.includeConfidence ? { include_confidence: "true" } : {}),
-    },
-  };
-}
-
-export function buildSam31VideoRequest(input: {
-  concept: string;
-  videoUrl?: string;
-  fileId?: string;
-  propagationDirection?: "both" | "forward" | "backward";
-}): unknown {
-  const media = input.fileId
-    ? { type: "input_video", file_id: input.fileId }
-    : { type: "input_video", video_url: input.videoUrl };
-  return {
-    model: SAM_MODEL,
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: input.concept }, media],
-      },
-    ],
-    stream: true,
-    metadata: {
-      mask_encoding: "one_bit",
-      ...(input.propagationDirection
-        ? { propagation_direction: input.propagationDirection }
-        : {}),
-    },
-  };
-}
-
-export function buildObjectPrompt(input: {
-  frame: number;
-  width: number;
-  height: number;
-  objects: Array<{
-    id: number;
-    box?: { x1: number; y1: number; x2: number; y2: number };
-    points?: Array<{ x: number; y: number; negative?: boolean }>;
-  }>;
-}): string {
-  const parts = input.objects.map((obj) => {
-    const tokens: string[] = [];
-    if (obj.box) {
-      tokens.push(
-        `<|box;x1=${obj.box.x1};y1=${obj.box.y1};x2=${obj.box.x2};y2=${obj.box.y2};w=${input.width};h=${input.height}|>`,
-      );
-    }
-    for (const point of obj.points ?? []) {
-      const prefix = point.negative ? "-" : "";
-      tokens.push(
-        `${prefix}<|point;x=${point.x};y=${point.y};w=${input.width};h=${input.height}|>`,
-      );
-    }
-    return `${obj.id}${tokens.join("")}`;
-  });
-  return `<${input.frame}f>${parts.join(",")}`;
 }
 
 export function buildWonderProbeRequest(): unknown {

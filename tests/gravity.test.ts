@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STANDARD_G } from "../src/physics/constants.ts";
+import { STANDARD_G } from "../src/physics/constants.js";
 import {
   downInScreenPixels,
   imageDownFromSample,
@@ -7,7 +7,7 @@ import {
   projectDownOntoRearImage,
   requestMotionPermission,
   worldDownFromAccelerationIncludingGravity,
-} from "../src/sensors/gravity.ts";
+} from "../src/sensors/gravity.js";
 
 describe("gravity mapping", () => {
   it("treats rest a+g as support acceleration: world-down is the negation", () => {

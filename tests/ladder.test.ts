@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessLadder } from "../src/physics/ladder.ts";
+import { assessLadder } from "../src/physics/ladder.js";
 
 describe("ladder", () => {
   it("recovers the 4:1 angle from vertical within 1%", () => {

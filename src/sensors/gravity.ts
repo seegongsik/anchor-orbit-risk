@@ -1,4 +1,4 @@
-import { radToDeg, type Vec3 } from "../physics/geometry.ts";
+import { radToDeg, type Vec3 } from "../physics/geometry.js";
 
 export type DeviceAcceleration = Vec3;
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { A4_LONG_SIDE_M, CREDIT_CARD_LONG_SIDE_M } from "../src/physics/constants.ts";
-import { knownLengthMetres, metersPerPixel } from "../src/physics/scale.ts";
+import { A4_LONG_SIDE_M, CREDIT_CARD_LONG_SIDE_M } from "../src/physics/constants.js";
+import { knownLengthMetres, metersPerPixel } from "../src/physics/scale.js";
 
 describe("scale", () => {
   it("uses ISO 216 and ISO/IEC 7810 lengths", () => {

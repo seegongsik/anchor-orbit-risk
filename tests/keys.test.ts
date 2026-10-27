@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyPresence, resolveModelApiKey } from "../server/keys.ts";
+import { keyPresence, resolveModelApiKey } from "../server/keys.js";
 
 describe("key resolution", () => {
   it("reads MODEL_API_KEY ?? META_API_KEY and never returns values from presence", () => {

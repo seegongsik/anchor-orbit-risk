@@ -1,5 +1,5 @@
-import { ROTATION_RESIDUAL_FRACTION_ASSUMPTION } from "./constants.ts";
-import type { Vec2 } from "./geometry.ts";
+import { ROTATION_RESIDUAL_FRACTION_ASSUMPTION } from "./constants.js";
+import type { Vec2 } from "./geometry.js";
 
 export type CircleFit = {
   center: Vec2;

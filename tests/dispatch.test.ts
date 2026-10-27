@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dispatchApi } from "../server/dispatch.ts";
+import { dispatchApi } from "../server/dispatch.js";
 
 describe("API dispatch without keys", () => {
   it("reports key presence without values", async () => {

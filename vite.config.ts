@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { dispatchApi } from "./server/dispatch.ts";
+import { dispatchApi } from "./server/dispatch.js";
 
 function collectBody(req: NodeJS.ReadableStream): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -46,8 +46,18 @@ export default defineConfig({
               response.headers.forEach((value, key) => {
                 res.setHeader(key, value);
               });
-              const buf = Buffer.from(await response.arrayBuffer());
-              res.end(buf);
+              if (!response.body) {
+                res.end();
+                return;
+              }
+              // Stream the body so NDJSON progress reaches the page as it happens.
+              const reader = response.body.getReader();
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                res.write(Buffer.from(value));
+              }
+              res.end();
             } catch (error) {
               next(error);
             }
