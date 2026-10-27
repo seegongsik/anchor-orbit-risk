@@ -21,7 +21,36 @@ export type Overlay = {
   marginLabel?: string;
   plumb: Plumb;
   label: string;
+  /** Other instances a concept prompt found, drawn faintly so a tap can pick one. */
+  objectChoices?: BinaryMask[];
+  /** What was sent to SAM 3.1 for the current target: a box and + / − taps. */
+  prompt?: { box?: { left: number; top: number; right: number; bottom: number }; points: { x: number; y: number; label: "positive" | "negative" }[] };
+  /** The box being dragged right now. */
+  dragBox?: { left: number; top: number; right: number; bottom: number };
 };
+
+function strokeBox(ctx: CanvasRenderingContext2D, b: { left: number; top: number; right: number; bottom: number }, unit: number): void {
+  ctx.setLineDash([unit * 5, unit * 3]);
+  ctx.lineWidth = unit * 2;
+  ctx.strokeStyle = "#f4efe4";
+  ctx.strokeRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
+  ctx.setLineDash([]);
+}
+
+function promptPoint(ctx: CanvasRenderingContext2D, p: { x: number; y: number; label: "positive" | "negative" }, unit: number): void {
+  const r = unit * 6;
+  dot(ctx, p, r, p.label === "positive" ? "#7fd3a0" : "#ff9d8f");
+  ctx.strokeStyle = "#12140f";
+  ctx.lineWidth = unit * 1.6;
+  ctx.beginPath();
+  ctx.moveTo(p.x - r * 0.55, p.y);
+  ctx.lineTo(p.x + r * 0.55, p.y);
+  if (p.label === "positive") {
+    ctx.moveTo(p.x, p.y - r * 0.55);
+    ctx.lineTo(p.x, p.y + r * 0.55);
+  }
+  ctx.stroke();
+}
 
 function paintMask(ctx: CanvasRenderingContext2D, mask: BinaryMask, rgba: [number, number, number, number]): void {
   const off = document.createElement("canvas");
@@ -78,7 +107,11 @@ export function drawStill(canvas: HTMLCanvasElement, image: HTMLCanvasElement, o
   const unit = image.width / 360;
   ctx.drawImage(image, 0, 0);
   if (o.support) paintMask(ctx, o.support, [80, 150, 230, 90]);
+  for (const m of o.objectChoices ?? []) if (m !== o.object) paintMask(ctx, m, [235, 120, 60, 45]);
   if (o.object) paintMask(ctx, o.object, [235, 120, 60, 120]);
+  if (o.prompt?.box) strokeBox(ctx, o.prompt.box, unit);
+  for (const p of o.prompt?.points ?? []) promptPoint(ctx, p, unit);
+  if (o.dragBox) strokeBox(ctx, o.dragBox, unit);
 
   if (o.polygonDraft.length > 0) {
     ctx.strokeStyle = "#e3b23c";

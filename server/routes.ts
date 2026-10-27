@@ -64,29 +64,47 @@ export async function handleModels(request: Request): Promise<Response> {
   );
 }
 
-function samPrompt(value: unknown): SamPrompt {
+function samBox(value: unknown, width: number, height: number): { left: number; top: number; right: number; bottom: number } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const b = (typeof value === "object" ? value : {}) as JsonRecord;
+  const left = Math.max(0, Math.floor(Number(b.left)));
+  const top = Math.max(0, Math.floor(Number(b.top)));
+  const right = Math.min(width, Math.ceil(Number(b.right)));
+  const bottom = Math.min(height, Math.ceil(Number(b.bottom)));
+  if (![left, top, right, bottom].every(Number.isFinite) || right - left < 2 || bottom - top < 2) {
+    throw new InputError("a box needs left < right and top < bottom inside the image");
+  }
+  return { left, top, right, bottom };
+}
+
+/** A concept phrase, or a box and/or up to 8 points on one object ("points" is the older name of "region"). */
+export function samPrompt(value: unknown): SamPrompt {
   const p = (typeof value === "object" && value !== null ? value : {}) as JsonRecord;
   if (p.kind === "concept" && typeof p.text === "string") return { kind: "concept", text: p.text };
-  if (p.kind === "points") {
-    const width = Number(p.width);
-    const height = Number(p.height);
+  if (p.kind === "points" || p.kind === "region") {
+    const width = Math.round(Number(p.width));
+    const height = Math.round(Number(p.height));
     const points = Array.isArray(p.points) ? p.points : [];
-    if (!(width > 0 && height > 0) || points.length === 0 || points.length > 8) {
-      throw new InputError("a points prompt needs the image size and 1 to 8 points");
+    if (!(width > 0 && height > 0) || points.length > 8) {
+      throw new InputError("a region prompt needs the image size and at most 8 points");
     }
+    const box = samBox(p.box, width, height);
+    if (!box && points.length === 0) throw new InputError("a region prompt needs a box or at least one point");
     return {
       kind: "objects",
-      width: Math.round(width),
-      height: Math.round(height),
+      width,
+      height,
       objects: [
         {
           id: 1,
           prompts: [
             {
+              ...(box ? { box } : {}),
               points: points.map((raw) => {
                 const pt = (typeof raw === "object" && raw !== null ? raw : {}) as JsonRecord;
-                const x = Math.max(0, Math.min(Math.round(width) - 1, Math.floor(Number(pt.x))));
-                const y = Math.max(0, Math.min(Math.round(height) - 1, Math.floor(Number(pt.y))));
+                const x = Math.max(0, Math.min(width - 1, Math.floor(Number(pt.x))));
+                const y = Math.max(0, Math.min(height - 1, Math.floor(Number(pt.y))));
+                if (!Number.isFinite(x) || !Number.isFinite(y)) throw new InputError("a point needs numeric x and y");
                 return { x, y, label: pt.label === "negative" ? ("negative" as const) : ("positive" as const) };
               }),
             },
@@ -95,7 +113,7 @@ function samPrompt(value: unknown): SamPrompt {
       ],
     };
   }
-  throw new InputError('prompt must be {"kind":"concept","text":...} or {"kind":"points",...}');
+  throw new InputError('prompt must be {"kind":"concept","text":...} or {"kind":"region",...}');
 }
 
 export async function handleSam(request: Request): Promise<Response> {

@@ -1,7 +1,7 @@
 /** Browser side of the server routes. No key ever reaches this file. */
 import type { Hazard } from "../assessment/types.js";
+import type { RegionPrompt } from "./sam-prompt.js";
 import type { RunMask } from "../physics/mask.js";
-import type { Vec2 } from "../physics/geometry.js";
 import type { AssessmentTable } from "../risk/table.js";
 
 export type ApiStatus = {
@@ -43,14 +43,15 @@ export async function getStatus(): Promise<ApiStatus | null> {
   }
 }
 
-export async function samAtPoint(
+/** A box and/or + / − points on one thing in the photo, in image pixels. */
+export async function samRegion(
   imageDataUrl: string,
   size: { width: number; height: number },
-  point: Vec2,
+  prompt: RegionPrompt,
 ): Promise<{ masks: SamMaskOut[]; latencyMs: number }> {
   return postJson("/api/sam", {
     imageDataUrl,
-    prompt: { kind: "points", width: size.width, height: size.height, points: [{ x: point.x, y: point.y }] },
+    prompt: { kind: "region", width: size.width, height: size.height, ...(prompt.box ? { box: prompt.box } : {}), points: prompt.points },
     includeConfidence: true,
   });
 }

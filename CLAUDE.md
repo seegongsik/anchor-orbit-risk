@@ -25,5 +25,5 @@ Anchor and Orbit: a phone-photo risk assessment (likelihood × severity) for the
 - `src/risk/` suggested grades from the measured margin and energy, the matrix, supervisor grade changes, CSV/printable table.
 - `src/assessment/` hazard types, the tool box the agent calls, the number checker, the no-agent path.
 - `server/` SAM 3.1 client (`sam.ts`), Baseten client (`spark.ts`), survey, agent loop, routes, budget guard. `api/` holds one Vercel function per route.
-- `src/sensors/` gravity mapping, camera pitch, board tilt and tip detection.
-- `src/ui/` the phone page (`tilt-meter.ts` is the live board-angle reader).
+- `src/sensors/` gravity mapping and the browser's gravity sign, camera pitch, board tilt and tip detection.
+- `src/ui/` the phone page (`tilt-meter.ts` is the live board-angle reader; `sam-prompt.ts` is the box and the add/remove taps sent to SAM 3.1).
