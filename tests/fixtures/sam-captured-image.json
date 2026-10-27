@@ -1,0 +1,38 @@
+{
+  "_source": "github.com/meta-models/meta-sam conformance/cases/captured-api-image-lossless.json (SAM License, see licenses/SAM-LICENSE.txt). A verbatim protocol-only output_text from a live SAM 3 image response, captured by Meta.",
+  "outputText": "<0f>0<|box;x1=513;y1=371;x2=523;y2=381;w=1440;h=900|><|mask;x=0;y=0;data=11,11,~!!!!r!kCq#$.pF[_cZIw.?wO3R8-&NJofiCI$_J0aA.1VC*YyK_'z*(LEG8!+H9evY.82Z-4.@C[.9C@T86o$3E=-&8w3W=]xS.|>\n",
+  "expected": {
+    "bounds": {
+      "left": 513,
+      "top": 371,
+      "right": 524,
+      "bottom": 382
+    },
+    "width": 11,
+    "height": 11,
+    "firstRunValue": 0,
+    "runs": [
+      4,
+      2,
+      7,
+      7,
+      3,
+      9,
+      2,
+      9,
+      1,
+      22,
+      1,
+      10,
+      1,
+      10,
+      1,
+      9,
+      3,
+      8,
+      5,
+      3,
+      4
+    ]
+  }
+}

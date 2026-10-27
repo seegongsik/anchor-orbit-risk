@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/assess.ts": { "maxDuration": 120 },
+    "api/sam.ts": { "maxDuration": 60 },
+    "api/survey.ts": { "maxDuration": 60 },
+    "api/spark-check.ts": { "maxDuration": 60 }
+  },
+  "rewrites": [
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
