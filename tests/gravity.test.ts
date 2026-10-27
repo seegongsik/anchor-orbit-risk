@@ -4,10 +4,22 @@ import {
   downInScreenPixels,
   imageDownFromSample,
   isStationary,
+  pitchFromProjection,
   projectDownOntoRearImage,
   requestMotionPermission,
   worldDownFromAccelerationIncludingGravity,
 } from "../src/sensors/gravity.js";
+
+describe("camera pitch", () => {
+  it("is zero when the phone stands upright and grows as it looks down", () => {
+    const upright = imageDownFromSample({ accelerationIncludingGravity: { x: 0, y: STANDARD_G, z: 0 }, screenAngleDeg: 0, timestampMs: 0 });
+    expect(pitchFromProjection(upright.towardUser, upright.magnitude)).toBeCloseTo(0, 9);
+    const a = { x: 0, y: STANDARD_G * Math.cos(Math.PI / 6), z: STANDARD_G * Math.sin(Math.PI / 6) };
+    const tilted = imageDownFromSample({ accelerationIncludingGravity: a, screenAngleDeg: 0, timestampMs: 0 });
+    expect(Math.abs(pitchFromProjection(tilted.towardUser, tilted.magnitude))).toBeCloseTo(30, 9);
+    expect(pitchFromProjection(0, 0)).toBe(0);
+  });
+});
 
 describe("gravity mapping", () => {
   it("treats rest a+g as support acceleration: world-down is the negation", () => {

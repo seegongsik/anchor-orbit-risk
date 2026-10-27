@@ -14,14 +14,15 @@ export type EdgeMeasurement = {
   dStdM: number;
   dP5M: number;
   dP95M: number;
+  /** Share of Monte Carlo draws with d <= 0: measurement uncertainty, not a fall probability. */
   pUnstableNow: number;
-  /** Monte Carlo samples of d in metres (rounded), used for the fall model. */
-  samplesM: number[];
   iterations: number;
   seed: number;
   gravitySource: GravitySource;
   gravityTiltDeg: number;
   shiftWithoutGravityM: number;
+  /** How far the camera looked up or down from horizontal at capture, degrees; null without a sensor reading. */
+  cameraPitchDeg: number | null;
   comHeightAboveEdgeM: number;
   /** Measured edge-to-floor height along the plumb line, or null. */
   dropHeightM: number | null;
@@ -38,6 +39,7 @@ export type LadderMeasurement = {
   angleStdDeg: number;
   gravitySource: GravitySource;
   gravityTiltDeg: number;
+  cameraPitchDeg: number | null;
   /** Measured height of the top contact above the foot, or null. */
   topHeightM: number | null;
   maskSource: MaskSource;
@@ -64,6 +66,8 @@ export type Hazard = {
   sharpEdgeDown?: boolean;
   note?: Text;
   measurement?: EdgeMeasurement | LadderMeasurement;
+  /** The margin measured before a change, when the hazard was measured again (before and after). */
+  before?: { dM: number; dP5M: number; capturedAt: string };
 };
 
 export const HAZARD_ID = /^h[1-9][0-9]?$/;

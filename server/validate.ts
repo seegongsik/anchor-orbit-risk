@@ -48,11 +48,11 @@ function maskSource(value: unknown): MaskSource {
   return value === "sam-3.1" || value === "synthetic" ? value : "manual";
 }
 
+function pitch(value: unknown, where: string): number | null {
+  return value === null || value === undefined ? null : finite(value, where, -90, 90);
+}
+
 function edgeMeasurement(value: JsonRecord, where: string): EdgeMeasurement {
-  const samples = Array.isArray(value.samplesM) ? value.samplesM : [];
-  if (samples.length < 1000 || samples.length > 5000) {
-    throw new InputError(`${where}.samplesM needs 1000 to 5000 Monte Carlo samples`);
-  }
   const inputs = rec(value.inputs, `${where}.inputs`);
   const sigma = rec(inputs.sigma, `${where}.inputs.sigma`);
   return {
@@ -62,12 +62,12 @@ function edgeMeasurement(value: JsonRecord, where: string): EdgeMeasurement {
     dP5M: finite(value.dP5M, `${where}.dP5M`, -10, 10),
     dP95M: finite(value.dP95M, `${where}.dP95M`, -10, 10),
     pUnstableNow: finite(value.pUnstableNow, `${where}.pUnstableNow`, 0, 1),
-    samplesM: samples.map((s, i) => finite(s, `${where}.samplesM[${i}]`, -10, 10)),
     iterations: finite(value.iterations, `${where}.iterations`, 1000, 1e6),
     seed: finite(value.seed, `${where}.seed`),
     gravitySource: gravitySource(value.gravitySource),
     gravityTiltDeg: finite(value.gravityTiltDeg, `${where}.gravityTiltDeg`, -90, 90),
     shiftWithoutGravityM: finite(value.shiftWithoutGravityM, `${where}.shiftWithoutGravityM`, -10, 10),
+    cameraPitchDeg: pitch(value.cameraPitchDeg, `${where}.cameraPitchDeg`),
     comHeightAboveEdgeM: finite(value.comHeightAboveEdgeM, `${where}.comHeightAboveEdgeM`, -10, 10),
     dropHeightM: value.dropHeightM === null || value.dropHeightM === undefined ? null : finite(value.dropHeightM, `${where}.dropHeightM`, 0, 50),
     metersPerPixel: finite(value.metersPerPixel, `${where}.metersPerPixel`, 1e-6, 1),
@@ -95,6 +95,7 @@ function ladderMeasurement(value: JsonRecord, where: string): LadderMeasurement 
     angleStdDeg: finite(value.angleStdDeg, `${where}.angleStdDeg`, 0, 90),
     gravitySource: gravitySource(value.gravitySource),
     gravityTiltDeg: finite(value.gravityTiltDeg, `${where}.gravityTiltDeg`, -90, 90),
+    cameraPitchDeg: pitch(value.cameraPitchDeg, `${where}.cameraPitchDeg`),
     topHeightM: value.topHeightM === null || value.topHeightM === undefined ? null : finite(value.topHeightM, `${where}.topHeightM`, 0, 50),
     maskSource: maskSource(value.maskSource),
     inputs: {
@@ -138,18 +139,16 @@ export function sanitizeHazards(value: unknown): Hazard[] {
       else if (m.type === "ladder") hazard.measurement = ladderMeasurement(m, `${where}.measurement`);
       else throw new InputError(`${where}.measurement.type must be edge or ladder`);
     }
+    if (h.before !== undefined && h.before !== null) {
+      const b = rec(h.before, `${where}.before`);
+      hazard.before = {
+        dM: finite(b.dM, `${where}.before.dM`, -10, 10),
+        dP5M: finite(b.dP5M, `${where}.before.dP5M`, -10, 10),
+        capturedAt: short(b.capturedAt, `${where}.before.capturedAt`, 40, false) ?? "",
+      };
+    }
     return hazard;
   });
-}
-
-export function sanitizeNudges(value: unknown): { nudgesPerDay: number; nudgeStdM: number; horizonDays: number } | undefined {
-  if (value === undefined || value === null) return undefined;
-  const n = rec(value, "nudges");
-  return {
-    nudgesPerDay: finite(n.nudgesPerDay, "nudges.nudgesPerDay", 0, 1000),
-    nudgeStdM: finite(n.nudgeStdM, "nudges.nudgeStdM", 0, 0.1),
-    horizonDays: finite(n.horizonDays, "nudges.horizonDays", 1, 3650),
-  };
 }
 
 const DATA_URL = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;

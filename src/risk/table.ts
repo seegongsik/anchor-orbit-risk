@@ -1,15 +1,37 @@
+import { riskRating } from "./assess.js";
 import {
   DISCLAIMER,
-  ENERGY_REFERENCES,
   LEGAL_CONTEXT,
-  LIKELIHOOD_BANDS,
+  LIKELIHOOD_LABELS,
+  MARGIN_LIKELIHOOD_EDGES_M,
+  MARGIN_LIKELIHOOD_REST_GRADE,
+  MATRIX,
   RISK_LEVELS,
   SEVERITY_BANDS,
   type Lang,
   type Text,
 } from "./config.js";
 
-export type Graded = { grade: number; label: Text; basis: Text };
+/** Who set a grade: the tool's suggestion, or the supervisor. */
+export type SetBy = "tool" | "supervisor";
+
+export type Graded = {
+  grade: number;
+  label: Text;
+  basis: Text;
+  /** The grade the tools suggested; equal to grade until the supervisor changes it. */
+  suggested: number;
+  by: SetBy;
+};
+
+export type Residual = {
+  likelihood: number;
+  likelihoodSuggested: number;
+  likelihoodBy: SetBy;
+  severity: number;
+  score: number;
+  level: Text;
+};
 
 export type ResolvedRow = {
   id: string;
@@ -20,7 +42,7 @@ export type ResolvedRow = {
   severity: Graded | null;
   risk: { score: number; level: Text } | null;
   controls: Text[];
-  residual: { likelihood: number; severity: number; score: number; level: Text } | null;
+  residual: Residual | null;
   evidence: string[];
   assumptions: Text[];
 };
@@ -63,9 +85,61 @@ const HEADERS: Record<Lang, string[]> = {
   ],
 };
 
+function setByText(by: SetBy, suggested: number, lang: Lang): string {
+  if (by === "supervisor") return lang === "ko" ? `관리감독자가 정함, 제안 ${suggested}` : `set by supervisor, suggested ${suggested}`;
+  return lang === "ko" ? "제안값, 확인 전" : "suggested, not yet confirmed";
+}
+
 function graded(g: Graded | null, lang: Lang): string {
   if (!g) return lang === "ko" ? "측정 안 함" : "Not measured";
-  return `${g.grade} (${g.label[lang]}) · ${g.basis[lang]}`;
+  return `${g.grade} (${g.label[lang]}) · ${setByText(g.by, g.suggested, lang)} · ${g.basis[lang]}`;
+}
+
+function likelihoodLabel(grade: number): Text {
+  return LIKELIHOOD_LABELS[grade] ?? LIKELIHOOD_LABELS[1];
+}
+
+function severityLabel(grade: number): Text {
+  return (SEVERITY_BANDS.find((b) => b.grade === grade) ?? SEVERITY_BANDS[0]).label;
+}
+
+export type GradeSlot = "likelihood" | "severity" | "residual";
+
+function checkGrade(grade: number, max: number): void {
+  if (!Number.isInteger(grade) || grade < 1 || grade > max) throw new Error(`grade must be an integer 1..${max}`);
+}
+
+/**
+ * The supervisor sets one grade of one row. Risk scores are recomputed from the
+ * grades on the same matrix; the tools' suggestion is kept next to the new grade.
+ */
+export function setGrade(table: AssessmentTable, rowId: string, slot: GradeSlot, grade: number): AssessmentTable {
+  const rows = table.rows.map((row) => {
+    if (row.id !== rowId) return row;
+    const next: ResolvedRow = { ...row };
+    if (slot === "likelihood" && row.likelihood) {
+      checkGrade(grade, MATRIX.likelihoodLevels);
+      next.likelihood = { ...row.likelihood, grade, label: likelihoodLabel(grade), by: grade === row.likelihood.suggested ? "tool" : "supervisor" };
+    } else if (slot === "severity" && row.severity) {
+      checkGrade(grade, MATRIX.severityLevels);
+      next.severity = { ...row.severity, grade, label: severityLabel(grade), by: grade === row.severity.suggested ? "tool" : "supervisor" };
+    } else if (slot === "residual" && row.residual) {
+      checkGrade(grade, MATRIX.likelihoodLevels);
+      next.residual = { ...row.residual, likelihood: grade, likelihoodBy: grade === row.residual.likelihoodSuggested ? "tool" : "supervisor" };
+    } else {
+      throw new Error(`row ${rowId} has no ${slot} grade`);
+    }
+    if (next.likelihood && next.severity) {
+      const r = riskRating(next.likelihood.grade, next.severity.grade);
+      next.risk = { score: r.score, level: r.level.label };
+    }
+    if (next.residual && next.severity) {
+      const r = riskRating(next.residual.likelihood, next.severity.grade);
+      next.residual = { ...next.residual, severity: next.severity.grade, score: r.score, level: r.level.label };
+    }
+    return next;
+  });
+  return { ...table, rows };
 }
 
 export function rowCells(row: ResolvedRow, index: number, lang: Lang): string[] {
@@ -79,7 +153,7 @@ export function rowCells(row: ResolvedRow, index: number, lang: Lang): string[] 
     row.risk ? `${row.risk.score} · ${row.risk.level[lang]}` : "",
     row.controls.map((c) => `- ${c[lang]}`).join("\n"),
     row.residual
-      ? `${row.residual.likelihood} × ${row.residual.severity} = ${row.residual.score} · ${row.residual.level[lang]}`
+      ? `${row.residual.likelihood} × ${row.residual.severity} = ${row.residual.score} · ${row.residual.level[lang]} (${lang === "ko" ? "가능성" : "likelihood"}: ${setByText(row.residual.likelihoodBy, row.residual.likelihoodSuggested, lang)})`
       : "",
     row.evidence.join("\n"),
     "",
@@ -113,12 +187,29 @@ function multiline(value: string): string {
 }
 
 function legend(lang: Lang): string {
-  const l = LIKELIHOOD_BANDS.map((b) => `${b.grade} ${escapeHtml(b.label[lang])} (P ≥ ${b.from * 100}%)`).join(" · ");
+  const edges = MARGIN_LIKELIHOOD_EDGES_M.map(
+    (e) => `${e.grade} ${escapeHtml(likelihoodLabel(e.grade)[lang])} (${e.inclusive ? "≤" : "<"} ${Math.round(e.upTo * 100)} cm)`,
+  );
+  edges.push(
+    `${MARGIN_LIKELIHOOD_REST_GRADE} ${escapeHtml(likelihoodLabel(MARGIN_LIKELIHOOD_REST_GRADE)[lang])} (${lang === "ko" ? "그 밖" : "otherwise"})`,
+  );
   const s = SEVERITY_BANDS.map((b) => `${b.grade} ${escapeHtml(b.label[lang])} (E ≥ ${b.from} J)`).join(" · ");
   const r = RISK_LEVELS.map((b) => `${escapeHtml(b.label[lang])} (≥ ${b.from})`).join(" · ");
-  const refs = ENERGY_REFERENCES.map((ref) => `${escapeHtml(ref.label[lang])} ${ref.value} ${ref.unit}: ${escapeHtml(ref.source)}`).join("<br>");
-  const assumption = lang === "ko" ? "등급 경계는 가정이며 바꿀 수 있습니다." : "Band edges are assumptions and can be changed.";
-  return `<p><b>${lang === "ko" ? "가능성" : "Likelihood"}</b>: ${l}<br><b>${lang === "ko" ? "중대성" : "Severity"}</b>: ${s}<br><b>${lang === "ko" ? "위험성" : "Risk"}</b>: ${r}<br>${assumption}<br>${refs}</p>`;
+  const text =
+    lang === "ko"
+      ? {
+          l: "가능성 제안(여유의 하위 5% 값)",
+          s: "중대성 제안(충돌 에너지 자릿수)",
+          r: "위험성",
+          note: "등급 경계는 가정입니다. 제안값은 측정한 기하와 에너지에서 나오며, 사고나 부상의 확률이 아닙니다. 등급은 관리감독자가 정합니다.",
+        }
+      : {
+          l: "Likelihood suggestion (lower 5% of the margin)",
+          s: "Severity suggestion (impact energy, by decade)",
+          r: "Risk",
+          note: "Band edges are assumptions. Suggestions come from measured geometry and energy; they are not probabilities of an accident or an injury. The supervisor sets the grades.",
+        };
+  return `<p><b>${text.l}</b>: ${edges.join(" · ")}<br><b>${text.s}</b>: ${s}<br><b>${text.r}</b>: ${r}<br>${text.note}</p>`;
 }
 
 /** A printable page (A4 landscape) for the assessment record. */

@@ -51,8 +51,9 @@ describe("edge measurement on the synthetic scene", () => {
     expect(Math.abs(m.gravityTiltDeg)).toBeCloseTo(6, 6);
     // Ignoring gravity (using the photo's own vertical) would be wrong by centimetres.
     expect(Math.abs(m.shiftWithoutGravityM)).toBeGreaterThan(0.005);
-    expect(m.samplesM).toHaveLength(1000);
+    expect(m.iterations).toBe(1000);
     expect(m.pUnstableNow).toBe(0);
+    expect(m.cameraPitchDeg).toBeNull();
   });
 
   it("feeds the local assessment end to end", () => {
@@ -84,6 +85,8 @@ describe("edge measurement on the synthetic scene", () => {
     );
     expect(table.rows[0].risk).not.toBeNull();
     expect(table.rows[0].measurements.some((x) => x.label.en.includes("measured"))).toBe(true);
+    // 6.0 cm expected margin: the lower 5% falls in the 3 to 10 cm band.
+    expect(table.rows[0].likelihood).toMatchObject({ grade: 2, by: "tool" });
   });
 });
 

@@ -86,7 +86,6 @@ export async function assess(
     hazards: Hazard[];
     place: string;
     imageDataUrl?: string;
-    nudges?: { nudgesPerDay: number; nudgeStdM: number; horizonDays: number };
   },
   onLine: (line: TraceLine) => void,
 ): Promise<AssessmentTable> {

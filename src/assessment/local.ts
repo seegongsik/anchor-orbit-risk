@@ -3,7 +3,6 @@
  * template text, checked by the same number checker. Used when no model key is
  * configured, and as a baseline to compare the agent against.
  */
-import type { Nudges } from "../risk/assess.js";
 import type { AssessmentTable } from "../risk/table.js";
 import { checkSubmission } from "./checker.js";
 import { ToolBox } from "./tools.js";
@@ -13,14 +12,20 @@ type Row = Record<string, unknown>;
 
 function edgeRow(box: ToolBox, h: Hazard): Row {
   const tip = box.run("tipover_margin", { hazard_id: h.id });
-  const fall = box.run("fall_probability", { hazard_id: h.id });
   const drop = box.run("drop_energy", { hazard_id: h.id });
   const sev = box.run("severity_grade", { drop_call: drop.id, use: "high" });
-  const risk = box.run("risk_rating", { likelihood_call: fall.id, severity_call: sev.id });
-  const need = box.run("required_margin", { hazard_id: h.id, target_probability: 0.001 });
+  const risk = box.run("risk_rating", { likelihood_call: tip.id, severity_call: sev.id });
+  const need = box.run("move_target", { hazard_id: h.id });
   const residual = box.run("risk_rating", { likelihood_call: need.id, severity_call: sev.id });
   const beyond = Number(tip.result.d_m) <= 0;
   const support = h.support ?? "support";
+  const before =
+    typeof tip.result.before_d_p5_m === "number"
+      ? {
+          en: ` Measured again after a change: allowing for measurement error, the margin went from {${tip.id}.before_d_p5_m} to {${tip.id}.d_p5_m}.`,
+          ko: ` 바꾼 뒤 다시 잼: 측정 오차를 넣은 여유가 {${tip.id}.before_d_p5_m}에서 {${tip.id}.d_p5_m}가 됨.`,
+        }
+      : { en: "", ko: "" };
   return {
     hazard_id: h.id,
     hazard: {
@@ -29,24 +34,24 @@ function edgeRow(box: ToolBox, h: Hazard): Row {
     },
     current_state: beyond
       ? {
-          en: `Its centre of mass is {${tip.id}.d_m} past the edge line; it is held by something other than its weight.`,
-          ko: `무게중심이 가장자리 선 밖으로 {${tip.id}.d_m} 나가 있다. 무게가 아닌 다른 것이 붙잡고 있다.`,
+          en: `Its estimated centre of mass is {${tip.id}.d_m} past the edge line; something other than its weight is holding it.${before.en}`,
+          ko: `추정한 무게중심이 가장자리 선 밖으로 {${tip.id}.d_m} 나가 있다. 무게가 아닌 다른 것이 붙잡고 있다.${before.ko}`,
         }
       : {
-          en: `Its centre of mass is {${tip.id}.d_m} inside the edge line.`,
-          ko: `무게중심이 가장자리 선 안쪽 {${tip.id}.d_m}에 있다.`,
+          en: `Its estimated centre of mass is {${tip.id}.d_m} inside the edge line; allowing for measurement error, at least {${tip.id}.d_p5_m}.${before.en}`,
+          ko: `추정한 무게중심이 가장자리 선 안쪽 {${tip.id}.d_m}에 있다. 측정 오차를 넣어도 {${tip.id}.d_p5_m} 이상이다.${before.ko}`,
         },
     controls: [
       {
-        en: `Move it inward by at least {${need.id}.move_by_m}, so the margin is at least {${need.id}.required_d_m}.`,
-        ko: `안쪽으로 {${need.id}.move_by_m} 이상 옮겨 여유를 {${need.id}.required_d_m} 이상으로 만든다.`,
+        en: `Move it inward by at least {${need.id}.move_by_m}, so that even allowing for measurement error the margin is at least {${need.id}.required_d_m}.`,
+        ko: `안쪽으로 {${need.id}.move_by_m} 이상 옮겨, 측정 오차를 넣어도 여유가 {${need.id}.required_d_m} 이상이 되게 한다.`,
       },
       {
         en: "If it must stay there, add a physical stop: an edge lip, a tray or an anti-slip mat.",
         ko: "그 자리에 두어야 한다면 가장자리 턱, 트레이, 미끄럼 방지 매트 같은 물리적 막이를 둔다.",
       },
     ],
-    likelihood_from: fall.id,
+    likelihood_from: tip.id,
     severity_from: sev.id,
     risk_from: risk.id,
     residual_from: residual.id,
@@ -92,9 +97,9 @@ function unmeasuredRow(h: Hazard): Row {
 
 export function localAssessment(
   hazards: Hazard[],
-  context: { place: string; createdAt: string; nudges?: Nudges },
+  context: { place: string; createdAt: string },
 ): { table: AssessmentTable; results: ToolBox["results"] } {
-  const box = new ToolBox(hazards, context.nudges);
+  const box = new ToolBox(hazards);
   const sources = new Set(hazards.map((h) => h.measurement?.maskSource).filter(Boolean));
   const models = sources.has("sam-3.1")
     ? ["sam-3.1"]

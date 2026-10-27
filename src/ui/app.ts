@@ -3,12 +3,14 @@ import type { Hazard, LadderMeasurement, MaskSource } from "../assessment/types.
 import { A4_LONG_SIDE_M, CREDIT_CARD_LONG_SIDE_M } from "../physics/constants.js";
 import type { Vec2 } from "../physics/geometry.js";
 import { maskFromRuns, polygonMask, type BinaryMask } from "../physics/mask.js";
-import { plumbFromDown } from "../physics/plumb.js";
-import { measureEdge, measureLadder, scaleFromTaps, type EdgeResult, type Scale } from "../pipeline/measure.js";
+import { imageTiltDeg, plumbFromDown } from "../physics/plumb.js";
+import type { BaseSide, TipPrediction } from "../physics/tipping.js";
+import { measureEdge, measureLadder, measureTip, scaleFromTaps, type EdgeResult, type Scale } from "../pipeline/measure.js";
 import { drawSyntheticScene, polygonsMask, syntheticScene } from "../pipeline/synthetic-scene.js";
-import { DISCLAIMER, LEGAL_CONTEXT, NUDGE_PRESETS, type Lang } from "../risk/config.js";
+import { ladderReferenceDeg } from "../risk/assess.js";
+import { DISCLAIMER, LEGAL_CONTEXT, SIDE_VIEW_MAX_PITCH_DEG, type Lang } from "../risk/config.js";
 import { formatField, formatLength, formatPercent } from "../risk/format.js";
-import type { AssessmentTable } from "../risk/table.js";
+import { setGrade, type AssessmentTable, type GradeSlot } from "../risk/table.js";
 import { requestMotionPermission } from "../sensors/gravity.js";
 import {
   ApiError,
@@ -24,9 +26,10 @@ import {
 } from "./api.js";
 import { drawLiveOverlay, GravityReader, startCamera, stillFromSource, type Still } from "./camera.js";
 import { canvasPoint, drawStill } from "./draw.js";
-import { downloadCsv, downloadText, openPrintable, renderTable } from "./table-view.js";
+import { downloadCsv, downloadText, openPrintable, renderTable, type BeforeAfter } from "./table-view.js";
+import { TiltMeter } from "./tilt-meter.js";
 
-type Kind = "edge" | "ladder";
+type Kind = "edge" | "ladder" | "tilt";
 type Tool = "object" | "table" | "edge" | "scale" | "floor" | "foot" | "top";
 
 const TOOLS: Record<Kind, { id: Tool; label: string }[]> = {
@@ -42,6 +45,7 @@ const TOOLS: Record<Kind, { id: Tool; label: string }[]> = {
     { id: "top", label: "Top" },
     { id: "scale", label: "Known length" },
   ],
+  tilt: [{ id: "object", label: "Object" }],
 };
 
 const HINTS: Record<Tool, { sam: string; manual: string }> = {
@@ -122,8 +126,10 @@ export function mountApp(root: HTMLElement): void {
         <button id="btn-motion" type="button">Allow motion sensors</button>
         <button id="btn-camera" type="button">Start camera</button>
       </div>
+      <p class="hint hidden" id="ghost-note"></p>
       <div class="stage live hidden" id="live-stage">
         <video id="live" autoplay playsinline muted></video>
+        <img class="ghost hidden" id="ghost" alt="" />
         <canvas class="overlay" id="live-overlay"></canvas>
       </div>
       <div class="row">
@@ -134,7 +140,7 @@ export function mountApp(root: HTMLElement): void {
         <input id="file" type="file" accept="image/jpeg,image/png,image/webp" class="hidden" />
         <button id="btn-synthetic" type="button">Synthetic example</button>
       </div>
-      <p class="tiny">Hold the phone upright (portrait) at the height of the edge and look along the edge, so it is seen end-on. Put an A4 sheet or a card at the same distance for scale. An uploaded photo has no gravity reading: its vertical is assumed.</p>
+      <p class="tiny">Hold the phone upright (portrait) and level, at the height of the edge, and look along the edge so it is seen end-on. The bar at the bottom of the preview turns green when the camera is level within ${SIDE_VIEW_MAX_PITCH_DEG}° (an assumption). Put an A4 sheet or a card at the same distance for scale. An uploaded photo has no gravity reading: its vertical is assumed.</p>
     </section>
 
     <section id="s-mark" class="hidden">
@@ -142,6 +148,7 @@ export function mountApp(root: HTMLElement): void {
       <div class="seg" id="kinds">
         <button type="button" data-kind="edge" class="on">Near an edge</button>
         <button type="button" data-kind="ladder">Leaning ladder</button>
+        <button type="button" data-kind="tilt">Tilt check</button>
       </div>
       <div class="seg tools" id="tools"></div>
       <p class="hint" id="hint"></p>
@@ -152,7 +159,7 @@ export function mountApp(root: HTMLElement): void {
         <button id="btn-survey" type="button">Find hazards</button>
       </div>
       <div id="survey"></div>
-      <div class="grid2">
+      <div class="grid2" id="scale-grid">
         <div>
           <label for="scale-preset">Known length</label>
           <select id="scale-preset">
@@ -169,6 +176,24 @@ export function mountApp(root: HTMLElement): void {
       <div class="metrics" id="metrics"></div>
       <details><summary>How it was measured</summary><ul id="notes" class="notes"></ul></details>
 
+      <div id="tilt-panel" class="hidden">
+        <h3 class="sub">Check the prediction on the real object</h3>
+        <p class="tiny">Stand the object on a board and photograph it from the side with the board level. Then lay the phone flat on the board next to it, tap Start, and raise one end of the board slowly until the object tips. A rubber mat stops it sliding first. Use something unbreakable, over a soft surface.</p>
+        <div class="seg" id="tilt-side">
+          <button type="button" data-side="auto" class="on">Easier side</button>
+          <button type="button" data-side="min">Tips to the left</button>
+          <button type="button" data-side="max">Tips to the right</button>
+        </div>
+        <div class="tilt-readout"><b id="tilt-now">–</b><span id="tilt-pred"></span></div>
+        <div class="row">
+          <button id="btn-tilt-start" type="button" class="primary" disabled>Start tilt meter</button>
+          <button id="btn-tilt-tipped" type="button" disabled>It tipped</button>
+        </div>
+        <ol class="trace" id="tilt-log"></ol>
+        <div class="row"><button id="btn-tilt-save" type="button" disabled>Download tilt results</button></div>
+      </div>
+
+      <div id="describe">
       <h3 class="sub">Describe it</h3>
       <div class="grid2">
         <div><label for="f-object">Object</label><input id="f-object" type="text" value="object" /></div>
@@ -182,6 +207,7 @@ export function mountApp(root: HTMLElement): void {
         <select id="f-target"></select>
         <button id="btn-add" type="button" class="primary" disabled>Add to assessment</button>
       </div>
+      </div>
       <div class="row"><button id="btn-save" type="button">Save capture for evaluation</button></div>
     </section>
 
@@ -190,19 +216,7 @@ export function mountApp(root: HTMLElement): void {
       <div id="hazards"></div>
       <label for="place">Place</label>
       <input id="place" type="text" placeholder="for example: 2F office, shared desk" />
-      <div class="grid2">
-        <div>
-          <label for="nudge">How often things here get nudged (assumption)</label>
-          <select id="nudge">${NUDGE_PRESETS.map(
-            (p) =>
-              `<option value="${p.id}"${p.id === "desk" ? " selected" : ""}>${p.label.en}: ${p.nudgesPerDay}/day, ${p.nudgeStdM * 1000} mm</option>`,
-          ).join("")}</select>
-        </div>
-        <div>
-          <label for="horizon">Period (days)</label>
-          <input id="horizon" type="number" min="1" max="3650" step="1" value="30" />
-        </div>
-      </div>
+      <p class="tiny">The tools suggest each grade from the measured margin and the impact energy. Check every grade in the table and change it where you know better, for example how often the spot is touched or who works below it.</p>
       <div class="row">
         <button id="btn-agent" type="button" class="primary">Assess with Muse Spark Open</button>
         <button id="btn-local" type="button">Assess without the agent</button>
@@ -260,18 +274,17 @@ export function mountApp(root: HTMLElement): void {
   const sMark = $("#s-mark");
   const sAssess = $("#s-assess");
   const placeInput = $<HTMLInputElement>("#place");
-  const nudgeSelect = $<HTMLSelectElement>("#nudge");
-  const horizonInput = $<HTMLInputElement>("#horizon");
-
-  function nudges() {
-    const preset = NUDGE_PRESETS.find((p) => p.id === nudgeSelect.value) ?? NUDGE_PRESETS[1];
-    const days = Number(horizonInput.value);
-    return {
-      nudgesPerDay: preset.nudgesPerDay,
-      nudgeStdM: preset.nudgeStdM,
-      horizonDays: days >= 1 && days <= 3650 ? days : 30,
-    };
-  }
+  const ghost = $<HTMLImageElement>("#ghost");
+  const ghostNote = $("#ghost-note");
+  const describeEl = $("#describe");
+  const scaleGrid = $("#scale-grid");
+  const tiltPanel = $("#tilt-panel");
+  const tiltNow = $("#tilt-now");
+  const tiltPred = $("#tilt-pred");
+  const tiltLogEl = $("#tilt-log");
+  const btnTiltStart = $<HTMLButtonElement>("#btn-tilt-start");
+  const btnTiltTipped = $<HTMLButtonElement>("#btn-tilt-tipped");
+  const btnTiltSave = $<HTMLButtonElement>("#btn-tilt-save");
 
   let api: ApiStatus | null = null;
   const gravity = new GravityReader();
@@ -291,6 +304,26 @@ export function mountApp(root: HTMLElement): void {
   let lang: Lang = "en";
   let busy = false;
   let synthetic = false;
+  /** The photo each hazard was last measured on, for re-shooting and before/after. */
+  const captures = new Map<string, { dataUrl: string; capturedAt: string }>();
+  const photos = new Map<string, BeforeAfter>();
+  let tipResult: TipPrediction | null = null;
+  let tiltSide: BaseSide | "auto" = "auto";
+  let meter: TiltMeter | null = null;
+  type TiltRecord = {
+    object: string;
+    side: BaseSide;
+    predictedDeg: number;
+    p5Deg: number;
+    p95Deg: number;
+    measuredDeg: number;
+    differenceDeg: number;
+    how: "jolt" | "button";
+    photoCapturedAt: string;
+    gravitySource: string;
+    maskSource: string;
+  };
+  const tiltLog: TiltRecord[] = [];
 
   const samReady = () => api?.modelApiKeyConfigured === true && !synthetic;
   const sparkReady = () => api?.basetenApiKeyConfigured === true;
@@ -316,7 +349,15 @@ export function mountApp(root: HTMLElement): void {
       .map((t) => `<button type="button" data-tool="${t.id}" class="${t.id === tool ? "on" : ""}">${t.label}</button>`)
       .join("");
     const manual = !samReady() || (tool === "object" && marks.polygonDraft.length > 0);
-    setHint(HINTS[tool][manual ? "manual" : "sam"]);
+    if (kind === "tilt" && tool === "object") {
+      setHint(manual ? "Tap the standing object's outline corner by corner, then Close shape." : "Tap the object standing on the board. SAM 3.1 outlines it.");
+    } else {
+      setHint(HINTS[tool][manual ? "manual" : "sam"]);
+    }
+    describeEl.classList.toggle("hidden", kind === "tilt");
+    scaleGrid.classList.toggle("hidden", kind === "tilt");
+    btnSurvey.classList.toggle("hidden", kind === "tilt");
+    tiltPanel.classList.toggle("hidden", kind !== "tilt");
     btnClose.classList.toggle("hidden", !(tool === "object" && marks.polygonDraft.length > 0));
   }
 
@@ -340,9 +381,24 @@ export function mountApp(root: HTMLElement): void {
     return `<div class="metric${bad ? " bad" : ""}"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   }
 
+  function tipGeometry(p: TipPrediction): EdgeResult["geometry"] {
+    const g = p.geometry;
+    const other = p.sides[g.side === "min" ? "max" : "min"].corner;
+    return {
+      com: g.com,
+      edge: g.corner,
+      supportPoint: other,
+      plumb: still?.plumb ?? plumbFromDown({ x: 0, y: 1 }),
+      supportSide: g.side === "max" ? -1 : 1,
+      comHeightAboveEdgePx: g.hPx,
+      dPx: g.dPx,
+    };
+  }
+
   function recompute(): void {
     edgeResult = null;
     ladderResult = null;
+    tipResult = null;
     notesEl.innerHTML = "";
     let message = "";
     if (still) {
@@ -368,8 +424,21 @@ export function mountApp(root: HTMLElement): void {
             manualSupportPoint: marks.manualSupportPoint,
             scale: s,
             floorPoint: marks.floorPoint,
+            cameraPitchDeg: still.pitchDeg,
           });
           notesEl.innerHTML = [...edgeResult.notes, `Scale: ${s.source}.`].map((n) => `<li>${escapeText(n)}</li>`).join("");
+        } else if (kind === "tilt") {
+          if (!marks.object) throw new Error("Mark the object standing on the board.");
+          const out = measureTip({
+            object: marks.object.mask,
+            objectSource: marks.object.source,
+            plumb: still.plumb,
+            gravitySource: still.gravitySource,
+            gravityNoiseRad: still.gravityNoiseRad,
+            side: tiltSide,
+          });
+          tipResult = out.prediction;
+          notesEl.innerHTML = out.notes.map((n) => `<li>${escapeText(n)}</li>`).join("");
         } else {
           if (marks.ladder.length < 2) throw new Error("Tap the ladder's foot, then its top.");
           ladderResult = measureLadder({
@@ -380,45 +449,68 @@ export function mountApp(root: HTMLElement): void {
             gravityNoiseRad: still.gravityNoiseRad,
             scale: s ?? undefined,
             maskSource: "manual",
+            cameraPitchDeg: still.pitchDeg,
           });
         }
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
       }
+      // The tilt check needs only the object: no table, scale or floor.
+      const tilting = kind === "tilt";
       drawStill(stillCanvas, still.canvas, {
         object: marks.object?.mask,
-        support: marks.support?.mask,
+        support: tilting ? undefined : marks.support?.mask,
         polygonDraft: marks.polygonDraft,
-        scaleTaps: marks.scaleTaps,
+        scaleTaps: tilting ? [] : marks.scaleTaps,
         scaleLabel: knownLength()?.label ?? "",
-        floorPoint: marks.floorPoint,
+        floorPoint: tilting ? undefined : marks.floorPoint,
         manualEdge: marks.manualEdge,
         manualSupportPoint: marks.manualSupportPoint,
         ladder: marks.ladder,
-        geometry: edgeResult?.geometry,
+        geometry: edgeResult?.geometry ?? (tipResult ? tipGeometry(tipResult) : undefined),
         dM: edgeResult?.measurement.dM,
+        marginLabel: tipResult ? `tips at ${tipResult.geometry.angleDeg.toFixed(1)}°` : undefined,
         plumb: still.plumb,
         label: `${still.origin === "synthetic" ? "SYNTHETIC · " : ""}gravity: ${still.gravitySource}`,
       });
     }
+    const pitchMetric = () =>
+      still?.pitchDeg === null || still?.pitchDeg === undefined
+        ? metric("Camera pitch", "no sensor")
+        : metric("Camera pitch", `${Math.abs(still.pitchDeg).toFixed(1)}°`, Math.abs(still.pitchDeg) > SIDE_VIEW_MAX_PITCH_DEG);
     if (edgeResult) {
       const m = edgeResult.measurement;
       metricsEl.innerHTML =
         metric("Margin d", `${formatLength(m.dM)} ± ${formatLength(m.dStdM)}`, m.dM <= 0) +
-        metric("Unstable now", formatPercent(m.pUnstableNow), m.pUnstableNow >= 0.05) +
+        metric("Margin, lower 5%", formatLength(m.dP5M), m.dP5M <= 0) +
+        metric("Draws past the line", formatPercent(m.pUnstableNow), m.pUnstableNow >= 0.05) +
         metric("Phone tilt corrected", `${Math.abs(m.gravityTiltDeg).toFixed(1)}°`) +
         metric("Error if gravity ignored", formatLength(Math.abs(m.shiftWithoutGravityM))) +
         metric("Centre above edge", formatLength(m.comHeightAboveEdgeM)) +
-        metric("Drop height", m.dropHeightM === null ? "not marked" : formatLength(m.dropHeightM));
+        metric("Drop height", m.dropHeightM === null ? "not marked" : formatLength(m.dropHeightM)) +
+        pitchMetric();
     } else if (ladderResult) {
       metricsEl.innerHTML =
         metric("Angle from ground", `${ladderResult.angleFromGroundDeg.toFixed(1)}° ± ${ladderResult.angleStdDeg.toFixed(1)}°`) +
-        metric("4:1 rule", "75.96°") +
+        metric("4:1 rule", `${ladderReferenceDeg().toFixed(1)}°`) +
         metric("Phone tilt corrected", `${Math.abs(ladderResult.gravityTiltDeg).toFixed(1)}°`) +
-        metric("Top height", ladderResult.topHeightM === null ? "mark a length" : formatLength(ladderResult.topHeightM));
+        metric("Top height", ladderResult.topHeightM === null ? "mark a length" : formatLength(ladderResult.topHeightM)) +
+        pitchMetric();
+    } else if (tipResult && still) {
+      const other = tipResult.sides[tipResult.side === "min" ? "max" : "min"];
+      metricsEl.innerHTML =
+        metric("Predicted tipping angle", `${tipResult.geometry.angleDeg.toFixed(1)}°`, tipResult.geometry.angleDeg <= 0) +
+        metric("Range (5–95%)", `${tipResult.p5Deg.toFixed(1)}–${tipResult.p95Deg.toFixed(1)}°`) +
+        metric("Other side", `${other.angleDeg.toFixed(1)}°`) +
+        metric("Phone tilt corrected", `${Math.abs(imageTiltDeg(still.plumb)).toFixed(1)}°`) +
+        pitchMetric();
     } else {
       metricsEl.innerHTML = "";
     }
+    tiltPred.textContent = tipResult
+      ? ` predicted ${tipResult.geometry.angleDeg.toFixed(1)}° (${tipResult.p5Deg.toFixed(1)}–${tipResult.p95Deg.toFixed(1)}°)`
+      : "";
+    btnTiltStart.disabled = !tipResult || meter !== null;
     if (message && still) setHint(message, "warn");
     else renderTools();
     updateAddButton();
@@ -454,7 +546,13 @@ export function mountApp(root: HTMLElement): void {
             : m?.type === "ladder"
               ? `${m.angleFromGroundDeg.toFixed(1)}°`
               : "not measured";
-        return `<div class="hz"><b>${h.id}</b> ${escapeText(h.object)}${h.support ? ` on ${escapeText(h.support)}` : ""} · ${fact}<button type="button" data-remove="${h.id}" aria-label="Remove ${h.id}">×</button></div>`;
+        const change =
+          m?.type === "edge" && h.before ? ` (was ${formatLength(h.before.dP5M)} at lower 5%, now ${formatLength(m.dP5M)})` : "";
+        const reshoot =
+          m?.type === "edge" && captures.has(h.id)
+            ? `<button type="button" data-reshoot="${h.id}">Re-shoot after a fix</button>`
+            : "";
+        return `<div class="hz"><span><b>${h.id}</b> ${escapeText(h.object)}${h.support ? ` on ${escapeText(h.support)}` : ""} · ${fact}${change}</span>${reshoot}<button type="button" data-remove="${h.id}" aria-label="Remove ${h.id}">×</button></div>`;
       })
       .join("");
     renderStatus();
@@ -468,7 +566,7 @@ export function mountApp(root: HTMLElement): void {
     surveyed = null;
     surveyEl.innerHTML = "";
     sMark.classList.remove("hidden");
-    tool = kind === "edge" ? "object" : "foot";
+    tool = kind === "ladder" ? "foot" : "object";
     renderTools();
     recompute();
     renderStatus();
@@ -526,7 +624,7 @@ export function mountApp(root: HTMLElement): void {
       const mark: ObjectMark = { mask: maskFromRuns(chosen), source: "sam-3.1" };
       if (which === "object") {
         marks.object = mark;
-        tool = "table";
+        tool = kind === "tilt" ? "object" : "table";
       } else {
         marks.support = mark;
         marks.manualSupportPoint = undefined;
@@ -635,7 +733,7 @@ export function mountApp(root: HTMLElement): void {
       massSource = "model estimate";
     }
     if (!still || kind !== "edge" || !samReady()) {
-      tool = kind === "edge" ? "object" : "foot";
+      tool = kind === "ladder" ? "foot" : "object";
       recompute();
       return;
     }
@@ -665,7 +763,9 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function addHazard(): void {
-    const measurement = kind === "edge" ? edgeResult?.measurement : ladderResult ?? undefined;
+    if (kind === "tilt") return;
+    const hazardKind = kind;
+    const measurement = hazardKind === "edge" ? edgeResult?.measurement : ladderResult ?? undefined;
     if (!measurement) return;
     const replace = target.value !== "new" ? target.value : null;
     const free = [1, 2, 3, 4, 5, 6, 7, 8].find((n) => !hazards.some((h) => h.id === `h${n}`));
@@ -674,10 +774,12 @@ export function mountApp(root: HTMLElement): void {
       return;
     }
     const id = replace ?? `h${free}`;
+    const old = replace ? hazards.find((h) => h.id === replace) : undefined;
+    const oldCapture = replace ? captures.get(replace) : undefined;
     const object = fObject.value.trim() || (kind === "ladder" ? "ladder" : "object");
     const hazard: Hazard = {
       id,
-      kind,
+      kind: hazardKind,
       object,
       ...(fSupport.value.trim() && kind === "edge" ? { support: fSupport.value.trim() } : {}),
       ...(surveyed?.below ? { below: surveyed.below } : {}),
@@ -689,8 +791,32 @@ export function mountApp(root: HTMLElement): void {
           : { low: Number(fMassLow.value), high: Number(fMassHigh.value), source: massSource },
       measurement,
     };
+    if (old?.measurement?.type === "edge" && measurement.type === "edge" && oldCapture) {
+      hazard.before = { dM: old.measurement.dM, dP5M: old.measurement.dP5M, capturedAt: oldCapture.capturedAt };
+      if (still) photos.set(id, { before: oldCapture.dataUrl, after: still.dataUrl });
+    } else {
+      photos.delete(id);
+    }
+    if (still) captures.set(id, { dataUrl: still.dataUrl, capturedAt: still.capturedAt });
     hazards = replace ? hazards.map((h) => (h.id === replace ? hazard : h)) : [...hazards, hazard];
+    hideGhost();
     renderHazards();
+  }
+
+  function showGhost(id: string): void {
+    const capture = captures.get(id);
+    if (!capture) return;
+    ghost.src = capture.dataUrl;
+    ghost.classList.remove("hidden");
+    ghostNote.textContent = `Re-shooting ${id}: make the fix (for example move the object inward), then stand where you stood before. The earlier photo shows faintly over the camera so you can line up the edge, then capture and mark it again. It will replace ${id} and keep the earlier margin for before and after.`;
+    ghostNote.classList.remove("hidden");
+    target.value = id;
+  }
+
+  function hideGhost(): void {
+    ghost.classList.add("hidden");
+    ghost.removeAttribute("src");
+    ghostNote.classList.add("hidden");
   }
 
   function traceItem(line: TraceLine): string {
@@ -728,7 +854,7 @@ export function mountApp(root: HTMLElement): void {
   function showTable(next: AssessmentTable): void {
     previous = table;
     table = next;
-    renderTable(tableEl, next, lang, previous);
+    renderTable(tableEl, next, lang, previous, photos);
     exportsEl.classList.remove("hidden");
   }
 
@@ -738,7 +864,7 @@ export function mountApp(root: HTMLElement): void {
     renderStatus();
     traceEl.innerHTML = "";
     try {
-      const result = await assess({ hazards, place: placeInput.value, imageDataUrl: still?.dataUrl, nudges: nudges() }, (line) => {
+      const result = await assess({ hazards, place: placeInput.value, imageDataUrl: still?.dataUrl }, (line) => {
         traceEl.insertAdjacentHTML("beforeend", traceItem(line));
       });
       showTable(result);
@@ -756,7 +882,6 @@ export function mountApp(root: HTMLElement): void {
       const { table: result, results } = localAssessment(hazards, {
         place: placeInput.value,
         createdAt: new Date().toISOString().slice(0, 10),
-        nudges: nudges(),
       });
       for (const r of results) {
         traceEl.insertAdjacentHTML("beforeend", traceItem({ type: "tool", id: r.id, name: r.tool, args: r.args, result: r.result }));
@@ -777,7 +902,6 @@ export function mountApp(root: HTMLElement): void {
     a.click();
     a.remove();
     const m = edgeResult?.measurement ?? ladderResult;
-    const summary = m && m.type === "edge" ? { ...m, samplesM: `${m.samplesM.length} samples omitted` } : m;
     downloadText(
       `capture-${stamp}.json`,
       "application/json",
@@ -792,6 +916,7 @@ export function mountApp(root: HTMLElement): void {
             plumbDown: still.plumb.down,
             noiseRad: still.gravityNoiseRad,
             stationary: still.stationary,
+            pitchDeg: still.pitchDeg,
           },
           marks: {
             scaleTaps: marks.scaleTaps,
@@ -803,7 +928,7 @@ export function mountApp(root: HTMLElement): void {
             objectSource: marks.object?.source ?? null,
             supportSource: marks.support?.source ?? null,
           },
-          measurement: summary ?? null,
+          measurement: m ?? null,
           rulerMeasuredDM: null,
           note: "For EVAL.md: fill rulerMeasuredDM with the margin measured by ruler, in metres.",
         },
@@ -847,11 +972,25 @@ export function mountApp(root: HTMLElement): void {
     if (!live.videoWidth) return;
     const reading = gravity.reading();
     const g = reading
-      ? { plumb: reading.plumb, source: "sensor" as const, noiseRad: reading.noiseRad, sample: reading.sample, stationary: reading.stationary }
+      ? {
+          plumb: reading.plumb,
+          source: "sensor" as const,
+          noiseRad: reading.noiseRad,
+          sample: reading.sample,
+          stationary: reading.stationary,
+          pitchDeg: reading.pitchDeg,
+        }
       : { plumb: plumbFromDown({ x: 0, y: 1 }), source: "image vertical (assumed)" as const, noiseRad: 0, sample: null, stationary: false };
+    const reshooting = !ghost.classList.contains("hidden") ? target.value : null;
     setStill(stillFromSource(live, live.videoWidth, live.videoHeight, g, "camera"));
+    if (reshooting && [...target.options].some((o) => o.value === reshooting)) target.value = reshooting;
     if (!reading) setHint("No gravity reading: the photo's vertical is assumed. Allow motion sensors for a real plumb line.", "warn");
     else if (reading.flat) setHint("The phone was nearly flat, so the plumb line is unreliable. Hold it upright and capture again.", "warn");
+    else if (Math.abs(reading.pitchDeg) > SIDE_VIEW_MAX_PITCH_DEG)
+      setHint(
+        `The camera was pitched ${Math.abs(reading.pitchDeg).toFixed(0)}°, so this is not a side view and distances may be foreshortened. Hold the phone level with the edge and capture again.`,
+        "warn",
+      );
   });
   $<HTMLInputElement>("#file").addEventListener("change", (event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
@@ -874,9 +1013,9 @@ export function mountApp(root: HTMLElement): void {
   $("#btn-synthetic").addEventListener("click", loadSynthetic);
   root.querySelectorAll<HTMLButtonElement>("#kinds button").forEach((b) =>
     b.addEventListener("click", () => {
-      kind = b.dataset.kind === "ladder" ? "ladder" : "edge";
+      kind = b.dataset.kind === "ladder" ? "ladder" : b.dataset.kind === "tilt" ? "tilt" : "edge";
       root.querySelectorAll<HTMLButtonElement>("#kinds button").forEach((x) => x.classList.toggle("on", x === b));
-      tool = kind === "edge" ? "object" : "foot";
+      tool = kind === "ladder" ? "foot" : "object";
       recompute();
     }),
   );
@@ -892,7 +1031,7 @@ export function mountApp(root: HTMLElement): void {
     if (marks.polygonDraft.length >= 3) {
       marks.object = { mask: polygonMask(marks.polygonDraft), source: "manual" };
       marks.polygonDraft = [];
-      tool = "table";
+      tool = kind === "tilt" ? "object" : "table";
     }
     recompute();
   });
@@ -925,11 +1064,92 @@ export function mountApp(root: HTMLElement): void {
     }),
   );
   btnAdd.addEventListener("click", addHazard);
+  root.querySelectorAll<HTMLButtonElement>("#tilt-side button").forEach((b) =>
+    b.addEventListener("click", () => {
+      tiltSide = b.dataset.side === "min" || b.dataset.side === "max" ? b.dataset.side : "auto";
+      root.querySelectorAll<HTMLButtonElement>("#tilt-side button").forEach((x) => x.classList.toggle("on", x === b));
+      recompute();
+    }),
+  );
+  btnTiltStart.addEventListener("click", () => {
+    if (!tipResult || !still) return;
+    const prediction = tipResult;
+    const photo = still;
+    const object = fObject.value.trim() || "object";
+    meter?.stop();
+    meter = new TiltMeter({
+      onTilt: (deg) => {
+        tiltNow.textContent = `${deg.toFixed(1)}°`;
+      },
+      onTip: (tip) => {
+        const difference = tip.tiltDeg - prediction.geometry.angleDeg;
+        tiltLog.push({
+          object,
+          side: prediction.side,
+          predictedDeg: prediction.geometry.angleDeg,
+          p5Deg: prediction.p5Deg,
+          p95Deg: prediction.p95Deg,
+          measuredDeg: tip.tiltDeg,
+          differenceDeg: difference,
+          how: tip.how,
+          photoCapturedAt: photo.capturedAt,
+          gravitySource: photo.gravitySource,
+          maskSource: marks.object?.source ?? "manual",
+        });
+        tiltLogEl.insertAdjacentHTML(
+          "beforeend",
+          `<li class="ok">${escapeText(object)}: tipped at ${tip.tiltDeg.toFixed(1)}° (${tip.how === "jolt" ? "landing detected" : "tapped"}) · predicted ${prediction.geometry.angleDeg.toFixed(1)}° (${prediction.p5Deg.toFixed(1)}–${prediction.p95Deg.toFixed(1)}°) · difference ${difference >= 0 ? "+" : ""}${difference.toFixed(1)}°</li>`,
+        );
+        tiltNow.textContent = `${tip.tiltDeg.toFixed(1)}°`;
+        meter = null;
+        btnTiltTipped.disabled = true;
+        btnTiltStart.disabled = false;
+        btnTiltSave.disabled = false;
+      },
+    });
+    meter.start();
+    tiltNow.textContent = "0.0°";
+    btnTiltStart.disabled = true;
+    btnTiltTipped.disabled = false;
+    setHint("Keep the board level for a moment: the first readings count as level. Then raise one end slowly.");
+  });
+  btnTiltTipped.addEventListener("click", () => meter?.tipped());
+  btnTiltSave.addEventListener("click", () => {
+    downloadText(
+      `tilt-check-${new Date().toISOString().slice(0, 10)}.json`,
+      "application/json",
+      JSON.stringify(
+        {
+          note: "Predicted tipping angle from one side photo (uniform density, no sliding assumed) against the board angle measured by the phone lying on the board. Jolt detection: threshold and look-back are assumptions.",
+          results: tiltLog,
+        },
+        null,
+        2,
+      ),
+    );
+  });
   hazardsEl.addEventListener("click", (event) => {
+    const again = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-reshoot]");
+    if (again?.dataset.reshoot) {
+      showGhost(again.dataset.reshoot);
+      if (!stream) setHint("Start the camera to re-shoot. The earlier photo will show faintly over it.", "warn");
+      liveStage.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-remove]");
     if (!b) return;
-    hazards = hazards.filter((h) => h.id !== b.dataset.remove);
+    const id = b.dataset.remove ?? "";
+    hazards = hazards.filter((h) => h.id !== id);
+    captures.delete(id);
+    photos.delete(id);
     renderHazards();
+  });
+  tableEl.addEventListener("change", (event) => {
+    const sel = (event.target as HTMLElement).closest<HTMLSelectElement>("select[data-slot]");
+    if (!sel || !table) return;
+    const slot = sel.dataset.slot as GradeSlot;
+    table = setGrade(table, sel.dataset.row ?? "", slot, Number(sel.value));
+    renderTable(tableEl, table, lang, previous, photos);
   });
   btnAgent.addEventListener("click", () => void runAgent());
   btnLocal.addEventListener("click", runLocal);
@@ -937,7 +1157,7 @@ export function mountApp(root: HTMLElement): void {
     b.addEventListener("click", () => {
       lang = b.dataset.lang === "ko" ? "ko" : "en";
       root.querySelectorAll<HTMLButtonElement>("#langs button").forEach((x) => x.classList.toggle("on", x === b));
-      if (table) renderTable(tableEl, table, lang, previous);
+      if (table) renderTable(tableEl, table, lang, previous, photos);
     }),
   );
   $("#btn-csv").addEventListener("click", () => {
@@ -970,6 +1190,13 @@ export function mountApp(root: HTMLElement): void {
   renderStatus();
   setInterval(renderStatus, 1500);
   const demo = new URLSearchParams(location.search).get("demo");
+  if (demo === "tilt") {
+    loadSynthetic();
+    kind = "tilt";
+    root.querySelectorAll<HTMLButtonElement>("#kinds button").forEach((x) => x.classList.toggle("on", x.dataset.kind === "tilt"));
+    tool = "object";
+    recompute();
+  }
   if (demo === "synthetic" || demo === "assess") {
     loadSynthetic();
     if (demo === "assess") {

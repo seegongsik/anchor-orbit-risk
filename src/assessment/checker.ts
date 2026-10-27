@@ -5,12 +5,12 @@
  * server fills in. Anything else is rejected and sent back to the agent.
  */
 import type { Hazard } from "./types.js";
-import { LIKELIHOOD_BANDS, SEVERITY_BANDS, type Text } from "../risk/config.js";
+import { LIKELIHOOD_LABELS, SEVERITY_BANDS, type Text } from "../risk/config.js";
 import { formatField, formatLength, formatPercent } from "../risk/format.js";
 import type { AssessmentTable, Graded, ResolvedRow } from "../risk/table.js";
 import type { ToolResult } from "./tools.js";
 
-const PLACEHOLDER = /\{(call_\d+)\.([a-zA-Z_]+)\}/g;
+const PLACEHOLDER = /\{(call_\d+)\.([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -46,7 +46,7 @@ class Checker {
       for (const name of this.names) if (name) stripped = stripped.split(name).join("");
       if (/[0-9]/.test(stripped)) {
         this.problems.push(
-          `${where}.${lang} contains a number you typed ("${s.slice(0, 80)}"). Numbers must come from tool results: use a placeholder such as {call_2.p_fall}.`,
+          `${where}.${lang} contains a number you typed ("${s.slice(0, 80)}"). Numbers must come from tool results: use a placeholder such as {call_1.d_m}.`,
         );
       }
       for (const match of s.matchAll(PLACEHOLDER)) {
@@ -98,13 +98,30 @@ function measurementLines(hazardId: string, results: ToolResult[]): ResolvedRow[
     const s = Number(tip.result.d_std_m);
     lines.push({ label: { en: "Margin d", ko: "여유 d" }, value: `${formatLength(d)} ± ${formatLength(s)}` });
     lines.push({
-      label: { en: "Unstable now", ko: "지금 불안정할 확률" },
-      value: formatPercent(Number(tip.result.p_unstable_now)),
+      label: { en: "Margin, lower 5%", ko: "여유 하위 5%" },
+      value: formatLength(Number(tip.result.d_p5_m)),
+    });
+    if (typeof tip.result.before_d_p5_m === "number") {
+      const change = Number(tip.result.change_d_p5_m);
+      lines.push({
+        label: { en: "Lower 5%: before → after", ko: "하위 5%: 이전 → 지금" },
+        value: `${formatLength(Number(tip.result.before_d_p5_m))} → ${formatLength(Number(tip.result.d_p5_m))} (${change >= 0 ? "+" : ""}${formatLength(change)})`,
+      });
+    }
+    lines.push({
+      label: { en: "Measurement draws past the line", ko: "측정 오차 계산 중 선을 넘은 비율" },
+      value: formatPercent(Number(tip.result.share_past_line)),
     });
     lines.push({
       label: { en: "Phone tilt corrected", ko: "보정한 휴대폰 기울기" },
       value: `${Number(tip.result.gravity_tilt_deg).toFixed(1)}°`,
     });
+    if (typeof tip.result.camera_pitch_deg === "number") {
+      lines.push({
+        label: { en: "Camera pitch", ko: "카메라 앞뒤 기울기" },
+        value: `${Math.abs(Number(tip.result.camera_pitch_deg)).toFixed(1)}°`,
+      });
+    }
   }
   const drop = last("drop_energy");
   if (drop) {
@@ -134,23 +151,26 @@ function measurementLines(hazardId: string, results: ToolResult[]): ResolvedRow[
 }
 
 function likelihoodOf(result: ToolResult): Graded {
-  const grade = Number(result.result.likelihood_grade ?? result.result.residual_likelihood_grade);
-  const band = LIKELIHOOD_BANDS.find((b) => b.grade === grade) ?? LIKELIHOOD_BANDS[0];
-  if (result.tool === "fall_probability") {
-    const p = formatPercent(Number(result.result.p_fall));
-    const days = Number(result.result.horizon_days);
+  const grade = Number(result.result.likelihood_grade);
+  const label = LIKELIHOOD_LABELS[grade] ?? LIKELIHOOD_LABELS[1];
+  if (result.tool === "tipover_margin") {
+    const p5 = formatLength(Number(result.result.d_p5_m));
     return {
       grade,
-      label: band.label,
+      label,
+      suggested: grade,
+      by: "tool",
       basis: {
-        en: `P(fall within ${days} days) = ${p}`,
-        ko: `${days}일 안에 떨어질 확률 ${p}`,
+        en: `margin lower 5% ${p5}`,
+        ko: `여유 하위 5% ${p5}`,
       },
     };
   }
   return {
     grade,
-    label: band.label,
+    label,
+    suggested: grade,
+    by: "tool",
     basis: {
       en: `ladder ${Number(result.result.angle_from_ground_deg).toFixed(1)}° vs ${Number(result.result.reference_deg).toFixed(1)}°`,
       ko: `사다리 ${Number(result.result.angle_from_ground_deg).toFixed(1)}° (기준 ${Number(result.result.reference_deg).toFixed(1)}°)`,
@@ -166,6 +186,8 @@ function severityOf(result: ToolResult): Graded {
   return {
     grade,
     label: band.label,
+    suggested: grade,
+    by: "tool",
     basis: {
       en: `E up to ${e}${sharp ? ", sharp edge down (+1)" : ""}`,
       ko: `에너지 최대 ${e}${sharp ? ", 날카로운 부분 아래(+1)" : ""}`,
@@ -216,7 +238,7 @@ export function checkSubmission(
     let residual: ResolvedRow["residual"] = null;
     if (hazard.measurement) {
       if (controls.length === 0) c.problems.push(`${where}.controls needs at least one control`);
-      const l = c.ref(row.likelihood_from, ["fall_probability", "ladder_angle"], id, `${where}.likelihood_from`);
+      const l = c.ref(row.likelihood_from, ["tipover_margin", "ladder_angle"], id, `${where}.likelihood_from`);
       const s = c.ref(row.severity_from, ["severity_grade"], id, `${where}.severity_from`);
       const r = c.ref(row.risk_from, ["risk_rating"], id, `${where}.risk_from`);
       if (l && s && r) {
@@ -230,9 +252,15 @@ export function checkSubmission(
       }
       if (row.residual_from !== undefined && row.residual_from !== null) {
         const rr = c.ref(row.residual_from, ["risk_rating"], id, `${where}.residual_from`);
-        if (rr) {
+        const sameSeverity = typeof row.severity_from === "string" && rr?.args.severity_call === row.severity_from;
+        if (rr && !sameSeverity) {
+          c.problems.push(`${where}.residual_from (${rr.id}) must use the same severity_grade result as severity_from`);
+        } else if (rr) {
+          const rl = Number(rr.result.likelihood_grade);
           residual = {
-            likelihood: Number(rr.result.likelihood_grade),
+            likelihood: rl,
+            likelihoodSuggested: rl,
+            likelihoodBy: "tool",
             severity: Number(rr.result.severity_grade),
             score: Number(rr.result.risk_score),
             level: { en: String(rr.result.risk_level_en), ko: String(rr.result.risk_level_ko) },

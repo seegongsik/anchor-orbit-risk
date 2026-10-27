@@ -1,7 +1,7 @@
 /** Formats a tool result field for people, choosing the unit from the field name. */
 export function formatField(field: string, value: number): string {
   if (!Number.isFinite(value)) return String(value);
-  if (field.startsWith("p_") || field.endsWith("_probability")) return formatPercent(value);
+  if (field.startsWith("p_") || field.startsWith("share_") || field.endsWith("_probability")) return formatPercent(value);
   if (field.endsWith("_mps")) return `${value.toFixed(2)} m/s`;
   if (field.endsWith("_deg")) return `${value.toFixed(1)}°`;
   if (field.endsWith("_kg")) return `${value.toFixed(2)} kg`;

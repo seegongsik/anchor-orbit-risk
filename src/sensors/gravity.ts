@@ -66,6 +66,15 @@ export function downInScreenPixels(
   return { x: c * image.u + s * image.v, y: -s * image.u + c * image.v };
 }
 
+/**
+ * Camera pitch from a gravity projection: the angle between the rear camera's
+ * axis (device -z) and the horizontal, in degrees. 0 = looking level.
+ */
+export function pitchFromProjection(towardUser: number, magnitude: number): number {
+  if (!(magnitude > 0)) return 0;
+  return radToDeg(Math.asin(Math.max(-1, Math.min(1, towardUser / magnitude))));
+}
+
 export function imageDownFromSample(sample: GravitySample): ImageDown {
   const down = worldDownFromAccelerationIncludingGravity(
     sample.accelerationIncludingGravity,

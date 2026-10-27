@@ -17,6 +17,8 @@ export type Overlay = {
   ladder: Vec2[];
   geometry?: EdgeGeometry;
   dM?: number;
+  /** Replaces the "d = …" label, for the tilt check. */
+  marginLabel?: string;
   plumb: Plumb;
   label: string;
 };
@@ -148,10 +150,11 @@ export function drawStill(canvas: HTMLCanvasElement, image: HTMLCanvasElement, o
     dot(ctx, g.com, unit * 5, bad ? "#ff7a6b" : "#7fd3a0");
     dot(ctx, g.edge, unit * 6, "#e3b23c");
     label(ctx, "anchor", { x: g.edge.x + unit * 8, y: g.edge.y + unit * 16 }, unit * 12);
-    if (o.dM !== undefined) {
+    const marginText = o.marginLabel ?? (o.dM !== undefined ? `d = ${formatLength(o.dM)}` : undefined);
+    if (marginText) {
       // Above the centre of mass, clear of the anchor below it.
       const lift = Math.max(unit * 30, Math.abs(g.comHeightAboveEdgePx) * 0.6);
-      label(ctx, `d = ${formatLength(o.dM)}`, { x: g.com.x - down.x * lift, y: g.com.y - down.y * lift }, unit * 14, "center");
+      label(ctx, marginText, { x: g.com.x - down.x * lift, y: g.com.y - down.y * lift }, unit * 14, "center");
     }
   } else {
     if (o.manualEdge) dot(ctx, o.manualEdge, unit * 6, "#e3b23c");

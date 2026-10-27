@@ -7,6 +7,7 @@ import type { EdgeMeasurement, GravitySource, LadderMeasurement, MaskSource } fr
 import { MONTE_CARLO_ITERATIONS, MONTE_CARLO_SEED } from "../physics/constants.js";
 import { degToRad, dot, radToDeg, type Vec2 } from "../physics/geometry.js";
 import { maskCentroid, maskExtent, type BinaryMask } from "../physics/mask.js";
+import { predictTipAngle, type BaseSide, type TipPrediction } from "../physics/tipping.js";
 import {
   edgeMargin,
   imageTiltDeg,
@@ -53,6 +54,8 @@ export type EdgeMarks = {
   manualSupportPoint?: Vec2;
   scale: Scale;
   floorPoint?: Vec2;
+  /** Camera pitch from the gravity sample at capture, degrees; null without a sensor reading. */
+  cameraPitchDeg?: number | null;
 };
 
 export type EdgeGeometry = {
@@ -112,7 +115,7 @@ export function measureEdge(marks: EdgeMarks): EdgeResult {
     scaleRel: marks.scale.relSigma,
   };
   notes.push(
-    `Centre of mass: area centroid of the ${marks.objectSource} mask, uniform density assumed; σ = ${sigma.comPx.toFixed(1)} px (mask ${maskRel * 100}% and density ${densityRel * 100}% of the object width, assumptions).`,
+    `Centre of mass (estimate): area centroid of the ${marks.objectSource} mask with uniform density; σ = ${sigma.comPx.toFixed(1)} px (mask ${maskRel * 100}% and density ${densityRel * 100}% of the object width, assumptions).`,
     `Edge: ${edgeSource === "manual" ? "tapped by hand" : "corner of the support mask"}; σ = ${sigma.edgePx} px (assumption).`,
     marks.gravitySource === "image vertical (assumed)"
       ? `Gravity: no sensor reading; the photo's vertical is assumed to be the plumb line, σ = 3° (assumption).`
@@ -150,12 +153,12 @@ export function measureEdge(marks: EdgeMarks): EdgeResult {
     dP5M: mc.percentiles.p5,
     dP95M: mc.percentiles.p95,
     pUnstableNow: mc.pUnstable,
-    samplesM: Array.from(mc.samples, (s) => Number(s.toPrecision(5))),
     iterations: mc.iterations,
     seed: mc.seed,
     gravitySource: marks.gravitySource,
     gravityTiltDeg: imageTiltDeg(marks.plumb),
     shiftWithoutGravityM: shift,
+    cameraPitchDeg: marks.cameraPitchDeg ?? null,
     comHeightAboveEdgeM: base.comHeightAboveEdgePx * marks.scale.metersPerPixel,
     dropHeightM,
     metersPerPixel: marks.scale.metersPerPixel,
@@ -188,6 +191,7 @@ export function measureLadder(input: {
   gravityNoiseRad: number;
   scale?: Scale;
   maskSource: MaskSource;
+  cameraPitchDeg?: number | null;
 }): LadderMeasurement {
   const along = { x: input.top.x - input.foot.x, y: input.top.y - input.foot.y };
   const len = Math.hypot(along.x, along.y);
@@ -203,8 +207,43 @@ export function measureLadder(input: {
     angleStdDeg,
     gravitySource: input.gravitySource,
     gravityTiltDeg: imageTiltDeg(input.plumb),
+    cameraPitchDeg: input.cameraPitchDeg ?? null,
     topHeightM,
     maskSource: input.maskSource,
     inputs: { footPx: input.foot, topPx: input.top, plumbDown: input.plumb.down },
   };
+}
+
+/**
+ * Predicted tipping angle for the tilt check: the object stands on a level
+ * board, seen from the side. Uses the same error model as the edge margin, minus
+ * the scale, which a ratio of lengths does not need.
+ */
+export function measureTip(input: {
+  object: BinaryMask;
+  objectSource: MaskSource;
+  plumb: Plumb;
+  gravitySource: GravitySource;
+  gravityNoiseRad: number;
+  side?: BaseSide | "auto";
+}): { prediction: TipPrediction; notes: string[] } {
+  const width = maskExtent(input.object, input.plumb.horizontal);
+  const maskRel = input.objectSource === "manual" ? 0.03 : 0.01;
+  const densityRel = 0.03;
+  const sigma = {
+    comPx: (width.max - width.min) * Math.hypot(maskRel, densityRel) + 0.5,
+    edgePx: input.objectSource === "manual" ? 5 : 3,
+    gravityRad:
+      input.gravitySource === "image vertical (assumed)"
+        ? degToRad(3)
+        : Math.hypot(degToRad(0.5), input.gravityNoiseRad),
+  };
+  const prediction = predictTipAngle({ object: input.object, plumb: input.plumb, sigma, side: input.side });
+  const notes = [
+    `Centre of mass (estimate): area centroid of the ${input.objectSource} mask with uniform density; σ = ${sigma.comPx.toFixed(1)} px.`,
+    `Pivot: the ${prediction.side === "min" ? "left" : "right"} bottom corner of the outline (as seen against gravity); σ = ${sigma.edgePx} px (assumption).`,
+    "Tipping angle θc = atan(d / h): d is the horizontal distance from the centre of mass to the pivot, h its height above it. No scale is needed.",
+    "Assumes the object does not slide first and that the board is raised slowly.",
+  ];
+  return { prediction, notes };
 }

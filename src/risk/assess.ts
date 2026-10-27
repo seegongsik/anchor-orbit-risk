@@ -1,73 +1,60 @@
 import { STANDARD_G } from "../physics/constants.js";
 import {
   bandFor,
-  ENERGY_REFERENCES,
+  CONTROL_TARGET_RANGE_M,
   LADDER_REFERENCE,
-  LIKELIHOOD_BANDS,
+  LIKELIHOOD_LABELS,
+  MARGIN_LIKELIHOOD_EDGES_M,
+  MARGIN_LIKELIHOOD_REST_GRADE,
   MATRIX,
   RISK_LEVELS,
   SEVERITY_BANDS,
   SHARP_DOWN_SEVERITY_STEP,
   type Band,
-  type Reference,
+  type Text,
 } from "./config.js";
-import { normalCdf, normalInv } from "./stats.js";
 
-export type Nudges = {
-  /** Expected small disturbances per day. Assumption. */
-  nudgesPerDay: number;
-  /** Standard deviation of the displacement per nudge, metres. Assumption. */
-  nudgeStdM: number;
-  /** Period the likelihood refers to, days. */
-  horizonDays: number;
-};
-
-function checkNudges(n: Nudges): void {
-  if (!(n.nudgesPerDay >= 0) || !(n.nudgeStdM >= 0) || !(n.horizonDays >= 0)) {
-    throw new Error("nudge assumptions must be non-negative numbers");
-  }
-}
+export type Suggested = { grade: number; label: Text };
 
 /**
- * Probability that an object with margin d goes over the edge within the
- * horizon, when random nudges move it back and forth. The position is a random
- * walk with N = nudges/day × days steps of std σ; by the reflection principle
- * P(max displacement toward the edge ≥ d) ≈ 2·(1 − Φ(d / (σ·√N))).
- * A margin at or below zero is already unstable: P = 1.
+ * Suggested likelihood grade from the lower 5% of the measured margin (metres).
+ * A rule over measured geometry, not a probability of falling.
  */
-export function fallProbability(dM: number, nudges: Nudges): number {
-  checkNudges(nudges);
-  if (dM <= 0) return 1;
-  const spread = nudges.nudgeStdM * Math.sqrt(nudges.nudgesPerDay * nudges.horizonDays);
-  if (spread === 0) return 0;
-  return Math.min(1, 2 * (1 - normalCdf(dM / spread)));
+export function marginLikelihood(dP5M: number): Suggested {
+  if (!Number.isFinite(dP5M)) throw new Error("margin must be a finite number");
+  let grade: number = MARGIN_LIKELIHOOD_REST_GRADE;
+  for (const edge of MARGIN_LIKELIHOOD_EDGES_M) {
+    if (edge.inclusive ? dP5M <= edge.upTo : dP5M < edge.upTo) {
+      grade = edge.grade;
+      break;
+    }
+  }
+  return { grade, label: LIKELIHOOD_LABELS[grade] };
 }
 
-/** Mean fall probability over the margin samples of a measurement Monte Carlo. */
-export function fallProbabilityFromSamples(samples: ArrayLike<number>, nudges: Nudges): number {
-  if (samples.length === 0) throw new Error("no margin samples");
-  let sum = 0;
-  for (let i = 0; i < samples.length; i += 1) sum += fallProbability(samples[i], nudges);
-  return sum / samples.length;
-}
+export type MoveTarget = {
+  targetM: number;
+  moveByM: number;
+  residual: Suggested;
+};
 
-/** The margin that brings the fall probability down to pTarget. */
-export function requiredMargin(pTarget: number, nudges: Nudges): number {
-  checkNudges(nudges);
-  if (!(pTarget > 0 && pTarget < 1)) throw new Error("target probability must be in (0, 1)");
-  const spread = nudges.nudgeStdM * Math.sqrt(nudges.nudgesPerDay * nudges.horizonDays);
-  return spread * normalInv(1 - pTarget / 2);
-}
-
-export function likelihoodGrade(pFall: number): Band {
-  return bandFor(LIKELIHOOD_BANDS, pFall);
+/**
+ * How far to move an object inward so that the lower 5% of its margin reaches
+ * the target, and the likelihood that margin suggests. Moving by d changes the
+ * margin by d because the edge line stays where it is.
+ */
+export function moveTarget(dP5M: number, targetM: number): MoveTarget {
+  if (!(targetM >= CONTROL_TARGET_RANGE_M.min && targetM <= CONTROL_TARGET_RANGE_M.max)) {
+    throw new Error(`target margin must be between ${CONTROL_TARGET_RANGE_M.min} and ${CONTROL_TARGET_RANGE_M.max} m`);
+  }
+  const moveByM = Math.max(0, targetM - dP5M);
+  return { targetM, moveByM, residual: marginLikelihood(Math.max(targetM, dP5M)) };
 }
 
 export type DropResult = {
   impactSpeedMps: number;
   energyLowJ: number;
   energyHighJ: number;
-  references: Reference[];
 };
 
 export function dropEnergy(input: { massLowKg: number; massHighKg: number; heightM: number }): DropResult {
@@ -80,10 +67,10 @@ export function dropEnergy(input: { massLowKg: number; massHighKg: number; heigh
     impactSpeedMps: Math.sqrt(2 * STANDARD_G * heightM),
     energyLowJ: massLowKg * STANDARD_G * heightM,
     energyHighJ: massHighKg * STANDARD_G * heightM,
-    references: ENERGY_REFERENCES,
   };
 }
 
+/** Suggested severity grade from the impact energy, one grade per decade. */
 export function severityGrade(energyJ: number, sharpEdgeDown: boolean): { band: Band; raisedForSharpness: boolean } {
   if (!(energyJ >= 0)) throw new Error("energy must be non-negative");
   const byEnergy = bandFor(SEVERITY_BANDS, energyJ);
@@ -111,8 +98,13 @@ export type LadderCheck = {
   verdict: "ok" | "too_steep" | "too_shallow";
 };
 
+/** The quarter-length rule angle: cos(angle) = base / working length = 1/4. */
+export function ladderReferenceDeg(): number {
+  return (Math.acos(LADDER_REFERENCE.baseToWorkingLength) * 180) / Math.PI;
+}
+
 export function ladderCheck(angleFromGroundDeg: number): LadderCheck {
-  const referenceDeg = (Math.atan(LADDER_REFERENCE.rise / LADDER_REFERENCE.run) * 180) / Math.PI;
+  const referenceDeg = ladderReferenceDeg();
   const deviationDeg = angleFromGroundDeg - referenceDeg;
   const verdict =
     deviationDeg > LADDER_REFERENCE.toleranceDeg

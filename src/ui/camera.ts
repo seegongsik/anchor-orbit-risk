@@ -1,11 +1,13 @@
 /** Live camera preview with the gravity plumb line, and still capture. */
 import type { GravitySource } from "../assessment/types.js";
 import { radToDeg, type Vec2 } from "../physics/geometry.js";
+import { SIDE_VIEW_MAX_PITCH_DEG } from "../risk/config.js";
 import { imageTiltDeg, plumbFromDown, type Plumb } from "../physics/plumb.js";
 import {
   downInScreenPixels,
   imageDownFromSample,
   isStationary,
+  pitchFromProjection,
   readScreenAngleDeg,
   type DeviceAcceleration,
   type GravitySample,
@@ -18,8 +20,15 @@ export type GravityReading = {
   noiseRad: number;
   stationary: boolean;
   flat: boolean;
+  /**
+   * How far the camera axis is from horizontal, degrees (sign follows the
+   * browser's accelerometer convention, which differs between platforms; use the
+   * magnitude). A side view of an edge needs it near zero.
+   */
+  pitchDeg: number;
   sample: GravitySample;
 };
+
 
 /** Averages the last few devicemotion samples (about a quarter of a second). */
 export class GravityReader {
@@ -73,6 +82,7 @@ export class GravityReader {
       noiseRad: Math.sqrt(sq / n),
       stationary: isStationary(this.buffer),
       flat: projected.isFlat,
+      pitchDeg: pitchFromProjection(projected.towardUser, projected.magnitude),
       sample,
     };
   }
@@ -88,6 +98,8 @@ export type Still = {
   gravityNoiseRad: number;
   gravitySample: GravitySample | null;
   stationary: boolean;
+  /** Camera pitch at capture, degrees; null without a sensor reading. */
+  pitchDeg: number | null;
   capturedAt: string;
   origin: "camera" | "upload" | "synthetic";
 };
@@ -101,7 +113,14 @@ export function stillFromSource(
   source: CanvasImageSource,
   sourceWidth: number,
   sourceHeight: number,
-  gravity: { plumb: Plumb; source: GravitySource; noiseRad: number; sample: GravitySample | null; stationary: boolean },
+  gravity: {
+    plumb: Plumb;
+    source: GravitySource;
+    noiseRad: number;
+    sample: GravitySample | null;
+    stationary: boolean;
+    pitchDeg?: number | null;
+  },
   origin: Still["origin"],
 ): Still {
   const size = fitSize(sourceWidth, sourceHeight);
@@ -121,6 +140,7 @@ export function stillFromSource(
     gravityNoiseRad: gravity.noiseRad,
     gravitySample: gravity.sample,
     stationary: gravity.stationary,
+    pitchDeg: gravity.pitchDeg ?? null,
     capturedAt: new Date().toISOString(),
     origin,
   };
@@ -182,5 +202,18 @@ export function drawLiveOverlay(canvas: HTMLCanvasElement, video: HTMLVideoEleme
     `Plumb line from gravity · tilt ${Math.abs(tilt).toFixed(1)}° · ±${radToDeg(reading.noiseRad).toFixed(2)}° · ${steady}`,
     10 * dpr,
     23 * dpr,
+  );
+  // Side-view check: the camera should look level at the edge, not down at it.
+  const pitch = Math.abs(reading.pitchDeg);
+  const level = pitch <= SIDE_VIEW_MAX_PITCH_DEG;
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, h - 34 * dpr, w, 34 * dpr);
+  ctx.fillStyle = level ? "#9fe0b5" : "#ff9d8f";
+  ctx.fillText(
+    level
+      ? `Camera level within ${pitch.toFixed(0)}° · side view OK`
+      : `Camera pitched ${pitch.toFixed(0)}° · hold the phone level with the edge`,
+    10 * dpr,
+    h - 11 * dpr,
   );
 }

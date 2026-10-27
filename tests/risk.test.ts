@@ -1,85 +1,43 @@
 import { describe, expect, it } from "vitest";
 import {
   dropEnergy,
-  fallProbability,
-  fallProbabilityFromSamples,
   ladderCheck,
-  likelihoodGrade,
-  requiredMargin,
+  ladderReferenceDeg,
+  marginLikelihood,
+  moveTarget,
   riskRating,
   severityGrade,
 } from "../src/risk/assess.js";
 import { formatField, formatLength, formatPercent } from "../src/risk/format.js";
-import { normalCdf, normalInv } from "../src/risk/stats.js";
-import { toCsv, toPrintableHtml, type AssessmentTable } from "../src/risk/table.js";
+import { setGrade, toCsv, toPrintableHtml, type AssessmentTable } from "../src/risk/table.js";
 
-describe("normal distribution", () => {
-  it("matches tabulated values", () => {
-    expect(normalCdf(0)).toBeCloseTo(0.5, 7);
-    expect(normalCdf(1.959964)).toBeCloseTo(0.975, 6);
-    expect(normalCdf(-3)).toBeCloseTo(0.0013499, 6);
-    expect(normalInv(0.975)).toBeCloseTo(1.959964, 5);
-    expect(normalInv(0.5)).toBeCloseTo(0, 7);
-    expect(normalInv(0.001)).toBeCloseTo(-3.090232, 5);
-    expect(normalInv(0.999999)).toBeCloseTo(4.753424, 4);
-  });
-});
-
-describe("fall probability (reflected random walk)", () => {
-  const nudges = { nudgesPerDay: 10, nudgeStdM: 0.005, horizonDays: 30 };
-
-  it("is one at or past the edge and falls with the margin", () => {
-    expect(fallProbability(0, nudges)).toBe(1);
-    expect(fallProbability(-0.01, nudges)).toBe(1);
-    const near = fallProbability(0.02, nudges);
-    const far = fallProbability(0.2, nudges);
-    expect(near).toBeGreaterThan(far);
-    // spread = 0.005 * sqrt(300); d = 0.1 -> 2(1 - Phi(0.1/spread))
-    const spread = 0.005 * Math.sqrt(300);
-    expect(fallProbability(0.1, nudges)).toBeCloseTo(2 * (1 - normalCdf(0.1 / spread)), 12);
-    expect(fallProbability(0.05, { ...nudges, nudgesPerDay: 0 })).toBe(0);
+describe("likelihood suggested by the measured margin", () => {
+  it("reads the lower 5% of the margin against the band edges", () => {
+    expect(marginLikelihood(-0.002).grade).toBe(5);
+    expect(marginLikelihood(0).grade).toBe(5);
+    expect(marginLikelihood(0.005).grade).toBe(4);
+    expect(marginLikelihood(0.0099).grade).toBe(4);
+    expect(marginLikelihood(0.01).grade).toBe(3);
+    expect(marginLikelihood(0.029).grade).toBe(3);
+    expect(marginLikelihood(0.03).grade).toBe(2);
+    expect(marginLikelihood(0.099).grade).toBe(2);
+    expect(marginLikelihood(0.1).grade).toBe(1);
+    expect(marginLikelihood(0.4).label.en).toBe("Rare");
+    expect(() => marginLikelihood(Number.NaN)).toThrow();
   });
 
-  it("agrees with a direct simulation of the walk (synthetic)", () => {
-    // Discrete Gaussian random walk, 300 steps, std 5 mm, start 6 cm from the edge.
-    let state = 7;
-    const rand = () => {
-      state = (state * 1103515245 + 12345) % 2147483648;
-      return state / 2147483648;
-    };
-    const gauss = () => Math.sqrt(-2 * Math.log(Math.max(rand(), 1e-12))) * Math.cos(2 * Math.PI * rand());
-    let fell = 0;
-    const trials = 4000;
-    for (let t = 0; t < trials; t += 1) {
-      let x = 0;
-      for (let s = 0; s < 300; s += 1) {
-        x += gauss() * 0.005;
-        if (x >= 0.06) {
-          fell += 1;
-          break;
-        }
-      }
-    }
-    const simulated = fell / trials;
-    const model = fallProbability(0.06, nudges);
-    // The continuous reflection formula slightly overstates a discrete walk.
-    expect(model).toBeGreaterThan(simulated);
-    expect(model - simulated).toBeLessThan(0.08);
-  });
-
-  it("averages over measurement samples and inverts to a required margin", () => {
-    const samples = new Float64Array([0.05, 0.05, 0.05, 0.05]);
-    expect(fallProbabilityFromSamples(samples, nudges)).toBeCloseTo(fallProbability(0.05, nudges), 12);
-    const d = requiredMargin(0.01, nudges);
-    expect(fallProbability(d, nudges)).toBeCloseTo(0.01, 5);
-  });
-
-  it("maps probabilities onto likelihood grades", () => {
-    expect(likelihoodGrade(0.0001).grade).toBe(1);
-    expect(likelihoodGrade(0.005).grade).toBe(2);
-    expect(likelihoodGrade(0.05).grade).toBe(3);
-    expect(likelihoodGrade(0.3).grade).toBe(4);
-    expect(likelihoodGrade(0.9).grade).toBe(5);
+  it("plans the move from the lower 5% so the target holds despite measurement error", () => {
+    const plan = moveTarget(0.024, 0.1);
+    expect(plan.moveByM).toBeCloseTo(0.076, 12);
+    expect(plan.residual.grade).toBe(1);
+    const already = moveTarget(0.15, 0.1);
+    expect(already.moveByM).toBe(0);
+    expect(already.residual.grade).toBe(1);
+    const small = moveTarget(-0.01, 0.03);
+    expect(small.moveByM).toBeCloseTo(0.04, 12);
+    expect(small.residual.grade).toBe(2);
+    expect(() => moveTarget(0.02, 0.01)).toThrow();
+    expect(() => moveTarget(0.02, 1)).toThrow();
   });
 });
 
@@ -92,15 +50,18 @@ describe("drop, severity and risk", () => {
     expect(() => dropEnergy({ massLowKg: 0.5, massHighKg: 0.4, heightM: 1 })).toThrow();
   });
 
-  it("grades severity against the reference energies and steps up for sharp edges", () => {
-    expect(severityGrade(2, false).band.grade).toBe(1);
-    expect(severityGrade(20, false).band.grade).toBe(2);
-    expect(severityGrade(60, false).band.grade).toBe(3);
-    expect(severityGrade(250, false).band.grade).toBe(4);
+  it("suggests severity by energy decade and steps up for sharp edges", () => {
+    expect(severityGrade(0.4, false).band.grade).toBe(1);
+    expect(severityGrade(1, false).band.grade).toBe(2);
+    expect(severityGrade(9.9, false).band.grade).toBe(2);
+    expect(severityGrade(10, false).band.grade).toBe(3);
+    expect(severityGrade(99, false).band.grade).toBe(3);
+    expect(severityGrade(100, false).band.grade).toBe(4);
     const sharp = severityGrade(2, true);
-    expect(sharp.band.grade).toBe(2);
+    expect(sharp.band.grade).toBe(3);
     expect(sharp.raisedForSharpness).toBe(true);
     expect(severityGrade(250, true).band.grade).toBe(4);
+    expect(severityGrade(250, true).raisedForSharpness).toBe(false);
   });
 
   it("rates risk on the 5 x 4 matrix", () => {
@@ -112,11 +73,13 @@ describe("drop, severity and risk", () => {
     expect(() => riskRating(2.5, 1)).toThrow();
   });
 
-  it("compares a ladder with the 4:1 rule", () => {
+  it("compares a leaning ladder with the quarter-length (4:1) rule", () => {
+    // OSHA 1926.1053(b)(5)(i): base = working length / 4, so cos(angle) = 1/4.
+    expect(ladderReferenceDeg()).toBeCloseTo((Math.acos(0.25) * 180) / Math.PI, 12);
+    expect(ladderReferenceDeg()).toBeCloseTo(75.52, 2);
     expect(ladderCheck(75.5).verdict).toBe("ok");
     expect(ladderCheck(85).verdict).toBe("too_steep");
     expect(ladderCheck(62).verdict).toBe("too_shallow");
-    expect(ladderCheck(75.5).referenceDeg).toBeCloseTo(75.96, 2);
   });
 });
 
@@ -124,7 +87,7 @@ describe("formatting and export", () => {
   it("formats by field name", () => {
     expect(formatField("d_m", 0.0213)).toBe("2.1 cm");
     expect(formatField("move_by_m", 0.004)).toBe("4.0 mm");
-    expect(formatField("p_fall", 0.383)).toBe("38%");
+    expect(formatField("share_past_line", 0.383)).toBe("38%");
     expect(formatField("energy_high_J", 2.94)).toBe("2.94 J");
     expect(formatField("impact_speed_mps", 3.836)).toBe("3.84 m/s");
     expect(formatLength(1.5)).toBe("1.50 m");
@@ -143,11 +106,30 @@ describe("formatting and export", () => {
         hazard: { en: "Mug near the edge, \"tea\"", ko: "가장자리 근처 머그컵" },
         currentState: { en: "On the desk", ko: "책상 위" },
         measurements: [{ label: { en: "Margin d", ko: "여유 d" }, value: "2.1 cm" }],
-        likelihood: { grade: 4, label: { en: "Likely", ko: "높음" }, basis: { en: "P = 38%", ko: "P = 38%" } },
-        severity: { grade: 1, label: { en: "Low", ko: "낮음" }, basis: { en: "E = 2.9 J", ko: "E = 2.9 J" } },
-        risk: { score: 4, level: { en: "Low", ko: "낮음" } },
+        likelihood: {
+          grade: 4,
+          label: { en: "Likely", ko: "높음" },
+          basis: { en: "margin lower 5% 6.0 mm", ko: "여유 하위 5% 6.0 mm" },
+          suggested: 4,
+          by: "tool",
+        },
+        severity: {
+          grade: 2,
+          label: { en: "Medium", ko: "보통" },
+          basis: { en: "E up to 2.94 J", ko: "에너지 최대 2.94 J" },
+          suggested: 2,
+          by: "tool",
+        },
+        risk: { score: 8, level: { en: "Medium (improve)", ko: "보통(개선 필요)" } },
         controls: [{ en: "Move it inward", ko: "안쪽으로 옮긴다" }],
-        residual: { likelihood: 1, severity: 1, score: 1, level: { en: "Low", ko: "낮음" } },
+        residual: {
+          likelihood: 1,
+          likelihoodSuggested: 1,
+          likelihoodBy: "tool",
+          severity: 2,
+          score: 2,
+          level: { en: "Low (acceptable, keep current controls)", ko: "낮음(허용 가능, 현 관리 유지)" },
+        },
         evidence: ["call_1 tipover_margin"],
         assumptions: [],
       },
@@ -161,10 +143,31 @@ describe("formatting and export", () => {
     expect(en).toContain('"Mug near the edge, ""tea"""');
   });
 
-  it("writes a printable page with escaped text and the disclaimer", () => {
+  it("writes a printable page with escaped text, the disclaimer and the suggestion rules", () => {
     const html = toPrintableHtml(table, "en");
     expect(html).toContain("&quot;tea&quot;");
-    expect(html).toContain("The supervisor makes the final judgment.");
-    expect(html).toContain("EN 397");
+    expect(html).toContain("makes the final judgment.");
+    expect(html).toContain("lower 5% of the margin");
+    expect(html).toContain("suggested, not yet confirmed");
+    expect(html).not.toContain("EN 397");
+  });
+
+  it("lets the supervisor set grades and recomputes the risk", () => {
+    const raised = setGrade(table, "h1", "likelihood", 5);
+    expect(raised.rows[0].likelihood).toMatchObject({ grade: 5, suggested: 4, by: "supervisor" });
+    expect(raised.rows[0].risk?.score).toBe(10);
+    expect(raised.rows[0].risk?.level.en).toBe("High (improve now)");
+    const severe = setGrade(raised, "h1", "severity", 3);
+    expect(severe.rows[0].risk?.score).toBe(15);
+    expect(severe.rows[0].residual).toMatchObject({ likelihood: 1, severity: 3, score: 3 });
+    const residual = setGrade(severe, "h1", "residual", 2);
+    expect(residual.rows[0].residual).toMatchObject({ likelihood: 2, likelihoodBy: "supervisor", score: 6 });
+    const back = setGrade(residual, "h1", "likelihood", 4);
+    expect(back.rows[0].likelihood?.by).toBe("tool");
+    expect(table.rows[0].risk?.score).toBe(8);
+    expect(toCsv(severe, "en")).toContain("set by supervisor, suggested 4");
+    expect(toCsv(severe, "ko")).toContain("관리감독자가 정함, 제안 4");
+    expect(() => setGrade(table, "h1", "severity", 5)).toThrow();
+    expect(() => setGrade(table, "h1", "likelihood", 0)).toThrow();
   });
 });

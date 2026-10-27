@@ -4,22 +4,14 @@
  * results by id (see checker.ts).
  */
 import type { EdgeMeasurement, Hazard, LadderMeasurement } from "./types.js";
+import { dropEnergy, ladderCheck, marginLikelihood, moveTarget, riskRating, severityGrade } from "../risk/assess.js";
 import {
-  dropEnergy,
-  fallProbabilityFromSamples,
-  ladderCheck,
-  likelihoodGrade,
-  requiredMargin,
-  riskRating,
-  severityGrade,
-  type Nudges,
-} from "../risk/assess.js";
-import {
+  CONTROL_TARGET_MARGIN_M,
+  CONTROL_TARGET_RANGE_M,
   DEFAULT_DROP_HEIGHT,
-  DEFAULT_NUDGES,
-  ENERGY_REFERENCES,
   LADDER_REFERENCE,
-  LIKELIHOOD_BANDS,
+  LIKELIHOOD_LABELS,
+  SIDE_VIEW_MAX_PITCH_DEG,
   type Text,
 } from "../risk/config.js";
 import type { ToolSpec } from "./tool-spec.js";
@@ -53,14 +45,8 @@ function spec(name: string, description: string, properties: Record<string, unkn
 export const TOOL_SPECS: ToolSpec[] = [
   spec(
     "tipover_margin",
-    "Measured margin d between the object's centre of mass and the plumb line through the support edge, with its uncertainty. Positive d = over the support.",
+    "Measured margin d between the object's estimated centre of mass and the plumb line through the support edge, with its uncertainty, and the likelihood grade the lower 5% of the margin suggests. Positive d = over the support. If the object was measured again after a change, it also gives the margin before and the change.",
     { hazard_id: STR },
-    ["hazard_id"],
-  ),
-  spec(
-    "fall_probability",
-    "Probability that the object goes over the edge within the horizon, from the measured margin and nudging assumptions. Omit an assumption to use the default.",
-    { hazard_id: STR, nudges_per_day: NUM, nudge_std_m: NUM, horizon_days: NUM },
     ["hazard_id"],
   ),
   spec(
@@ -71,25 +57,25 @@ export const TOOL_SPECS: ToolSpec[] = [
   ),
   spec(
     "severity_grade",
-    "Severity grade from a drop_energy result. use = 'high' (conservative) or 'low'.",
+    "Severity grade a drop_energy result suggests, one grade per tenfold step in energy. use = 'high' (conservative) or 'low'.",
     { drop_call: STR, use: { type: "string", enum: ["high", "low"] }, sharp_edge_down: BOOL },
     ["drop_call"],
   ),
   spec(
     "risk_rating",
-    "Risk score = likelihood grade × severity grade. likelihood_call is a fall_probability, required_margin or ladder_angle result; severity_call is a severity_grade result.",
+    "Risk score = likelihood grade × severity grade. likelihood_call is a tipover_margin, move_target or ladder_angle result; severity_call is a severity_grade result.",
     { likelihood_call: STR, severity_call: STR },
     ["likelihood_call", "severity_call"],
   ),
   spec(
-    "required_margin",
-    "Margin needed to bring the fall probability down to target_probability, how far to move the object, and the resulting likelihood grade.",
-    { hazard_id: STR, target_probability: NUM, nudges_per_day: NUM, nudge_std_m: NUM, horizon_days: NUM },
-    ["hazard_id", "target_probability"],
+    "move_target",
+    `How far to move the object inward so that the lower 5% of its margin reaches target_d_m (default ${CONTROL_TARGET_MARGIN_M} m, allowed ${CONTROL_TARGET_RANGE_M.min} to ${CONTROL_TARGET_RANGE_M.max}), and the likelihood grade that margin suggests.`,
+    { hazard_id: STR, target_d_m: NUM },
+    ["hazard_id"],
   ),
   spec(
     "ladder_angle",
-    "Measured ladder angle from the ground against the 4:1 rule, with a likelihood grade from an assumed mapping.",
+    "Measured ladder angle from the ground against the quarter-length (4:1) rule for leaning ladders, with a suggested likelihood grade.",
     { hazard_id: STR },
     ["hazard_id"],
   ),
@@ -100,33 +86,19 @@ function clampAssumption(value: unknown, fallback: number, min: number, max: num
   return Math.min(max, Math.max(min, value));
 }
 
-function nudgesFrom(args: Record<string, unknown>, defaults: Nudges): { nudges: Nudges; custom: boolean } {
-  const nudges = {
-    nudgesPerDay: clampAssumption(args.nudges_per_day, defaults.nudgesPerDay, 0, 1000),
-    nudgeStdM: clampAssumption(args.nudge_std_m, defaults.nudgeStdM, 0, 0.1),
-    horizonDays: clampAssumption(args.horizon_days, defaults.horizonDays, 1, 3650),
-  };
-  const custom =
-    args.nudges_per_day !== undefined || args.nudge_std_m !== undefined || args.horizon_days !== undefined;
-  return { nudges, custom };
-}
-
-function nudgeText(n: Nudges, custom: boolean): Text {
-  const who = custom ? { en: "chosen by the agent", ko: "에이전트가 정함" } : { en: "set for this place", ko: "이 장소에 맞춰 정함" };
+function marginRuleText(): Text {
   return {
-    en: `Assumption (${who.en}): ${n.nudgesPerDay} nudges a day, ${(n.nudgeStdM * 1000).toFixed(1)} mm each (std), over ${n.horizonDays} days.`,
-    ko: `가정(${who.ko}): 하루 ${n.nudgesPerDay}번 밀림, 한 번에 표준편차 ${(n.nudgeStdM * 1000).toFixed(1)} mm, ${n.horizonDays}일 동안.`,
+    en: "Suggested likelihood from the lower 5% of the margin: at or below 0 → 5, under 1 cm → 4, under 3 cm → 3, under 10 cm → 2, else 1. The band edges are assumptions; the supervisor sets the grade, knowing how often the spot is touched.",
+    ko: "가능성 제안은 여유의 하위 5% 값으로 정함: 0 이하 5, 1 cm 미만 4, 3 cm 미만 3, 10 cm 미만 2, 그 밖 1. 경계는 가정이며, 그 자리를 얼마나 자주 건드리는지 아는 관리감독자가 등급을 정함.",
   };
 }
 
 export class ToolBox {
   readonly results: ToolResult[] = [];
   private readonly hazards: Map<string, Hazard>;
-  private readonly nudgeDefaults: Nudges;
 
-  constructor(hazards: Hazard[], nudgeDefaults: Nudges = DEFAULT_NUDGES) {
+  constructor(hazards: Hazard[]) {
     this.hazards = new Map(hazards.map((h) => [h.id, h]));
-    this.nudgeDefaults = nudgeDefaults;
   }
 
   hazardIds(): string[] {
@@ -174,60 +146,69 @@ export class ToolBox {
       case "tipover_margin": {
         const h = this.hazard(args.hazard_id);
         const m = this.edge(h);
-        return this.record(
-          name,
-          args,
+        const suggested = marginLikelihood(m.dP5M);
+        const result: Record<string, unknown> = {
+          d_m: m.dM,
+          d_std_m: m.dStdM,
+          d_p5_m: m.dP5M,
+          d_p95_m: m.dP95M,
+          share_past_line: m.pUnstableNow,
+          likelihood_grade: suggested.grade,
+          likelihood_label_en: suggested.label.en,
+          likelihood_label_ko: suggested.label.ko,
+          gravity_source: m.gravitySource,
+          gravity_tilt_deg: m.gravityTiltDeg,
+          margin_shift_without_gravity_m: m.shiftWithoutGravityM,
+          com_height_above_edge_m: m.comHeightAboveEdgeM,
+          iterations: m.iterations,
+          seed: m.seed,
+          mask_source: m.maskSource,
+          scale_source: m.scaleSource,
+        };
+        const assumptions: Text[] = [
+          m.gravitySource === "sensor"
+            ? {
+                en: `Measured from the photo with the phone's gravity vector (${m.maskSource} mask, scale: ${m.scaleSource}).`,
+                ko: `휴대폰 중력 벡터로 사진에서 잼(${m.maskSource} 마스크, 축척: ${m.scaleSource}).`,
+              }
+            : {
+                en: `Gravity source: ${m.gravitySource}; the plumb line is not a sensor reading (${m.maskSource} mask, scale: ${m.scaleSource}).`,
+                ko: `중력 출처: ${m.gravitySource === "synthetic" ? "합성 장면" : "사진의 세로축을 가정"}. 센서 측정이 아님(${m.maskSource} 마스크, 축척: ${m.scaleSource}).`,
+              },
           {
-            d_m: m.dM,
-            d_std_m: m.dStdM,
-            d_p5_m: m.dP5M,
-            d_p95_m: m.dP95M,
-            p_unstable_now: m.pUnstableNow,
-            gravity_source: m.gravitySource,
-            gravity_tilt_deg: m.gravityTiltDeg,
-            margin_shift_without_gravity_m: m.shiftWithoutGravityM,
-            com_height_above_edge_m: m.comHeightAboveEdgeM,
-            iterations: m.iterations,
-            seed: m.seed,
-            mask_source: m.maskSource,
-            scale_source: m.scaleSource,
+            en: "The centre of mass is estimated from the outline with uniform density. A heavier part on one side moves the real one.",
+            ko: "무게중심은 윤곽에서 밀도가 균일하다고 보고 추정한 값. 한쪽이 더 무거우면 실제 무게중심은 달라짐.",
           },
-          [
-            m.gravitySource === "sensor"
-              ? {
-                  en: `Measured from the photo with the phone's gravity vector (${m.maskSource} mask, scale: ${m.scaleSource}). Uniform density assumed.`,
-                  ko: `휴대폰 중력 벡터로 사진에서 잼(${m.maskSource} 마스크, 축척: ${m.scaleSource}). 밀도는 균일하다고 가정.`,
-                }
-              : {
-                  en: `Gravity source: ${m.gravitySource}; the plumb line is not a sensor reading (${m.maskSource} mask, scale: ${m.scaleSource}).`,
-                  ko: `중력 출처: ${m.gravitySource === "synthetic" ? "합성 장면" : "사진의 세로축을 가정"}. 센서 측정이 아님(${m.maskSource} 마스크, 축척: ${m.scaleSource}).`,
-                },
-          ],
-          h.id,
-        );
-      }
-      case "fall_probability": {
-        const h = this.hazard(args.hazard_id);
-        const m = this.edge(h);
-        const { nudges, custom } = nudgesFrom(args, this.nudgeDefaults);
-        const p = fallProbabilityFromSamples(m.samplesM, nudges);
-        const band = likelihoodGrade(p);
-        return this.record(
-          name,
-          args,
           {
-            p_fall: p,
-            likelihood_grade: band.grade,
-            likelihood_label_en: band.label.en,
-            likelihood_label_ko: band.label.ko,
-            nudges_per_day: nudges.nudgesPerDay,
-            nudge_std_m: nudges.nudgeStdM,
-            horizon_days: nudges.horizonDays,
-            model: "reflected random walk: P = 2(1 - Phi(d / (sigma * sqrt(N)))), averaged over the margin samples",
+            en: "The share past the line is the fraction of measurement-error draws in which the centre of mass is already beyond the edge line. It is not a probability that the object falls.",
+            ko: "선을 넘은 비율은 측정 오차를 넣어 다시 계산한 값 가운데 무게중심이 이미 가장자리 선 밖에 있는 비율. 떨어질 확률이 아님.",
           },
-          [nudgeText(nudges, custom)],
-          h.id,
-        );
+          marginRuleText(),
+        ];
+        if (m.cameraPitchDeg === null) {
+          assumptions.push({
+            en: "Camera pitch unknown (no sensor reading); a side view at the height of the edge is assumed.",
+            ko: "카메라 앞뒤 기울기를 모름(센서 기록 없음). 가장자리 높이에서 옆으로 찍었다고 가정.",
+          });
+        } else {
+          result.camera_pitch_deg = m.cameraPitchDeg;
+          if (Math.abs(m.cameraPitchDeg) > SIDE_VIEW_MAX_PITCH_DEG) {
+            assumptions.push({
+              en: `The phone was pitched ${Math.abs(m.cameraPitchDeg).toFixed(0)}° up or down (beyond ${SIDE_VIEW_MAX_PITCH_DEG}°, an assumption), so this is not a clean side view and distances may be foreshortened.`,
+              ko: `휴대폰이 앞뒤로 ${Math.abs(m.cameraPitchDeg).toFixed(0)}° 기울어 있었음(기준 ${SIDE_VIEW_MAX_PITCH_DEG}°는 가정). 옆에서 찍은 사진이 아니라 거리가 줄어 보일 수 있음.`,
+            });
+          }
+        }
+        if (h.before) {
+          result.before_d_m = h.before.dM;
+          result.before_d_p5_m = h.before.dP5M;
+          result.change_d_p5_m = m.dP5M - h.before.dP5M;
+          assumptions.push({
+            en: `Before value from the earlier capture of the same hazard (${h.before.capturedAt}).`,
+            ko: `이전 값은 같은 위험요인을 먼저 찍은 사진에서 잼(${h.before.capturedAt}).`,
+          });
+        }
+        return this.record(name, args, result, assumptions, h.id);
       }
       case "drop_energy": {
         const h = this.hazard(args.hazard_id);
@@ -295,8 +276,6 @@ export class ToolBox {
             impact_speed_mps: drop.impactSpeedMps,
             energy_low_J: drop.energyLowJ,
             energy_high_J: drop.energyHighJ,
-            reference_helmet_test_J: ENERGY_REFERENCES[0].value,
-            reference_toe_cap_test_J: ENERGY_REFERENCES[1].value,
           },
           assumptions,
           h.id,
@@ -323,8 +302,8 @@ export class ToolBox {
           },
           [
             {
-              en: "Severity band edges are assumptions placed at protective-equipment test energies (EN 397: 49 J, EN ISO 20345: 200 J). Sharp edge down adds one grade (assumption).",
-              ko: "중대성 경계는 보호구 시험 에너지(EN 397 49 J, EN ISO 20345 200 J)에 맞춘 가정. 날카로운 부분이 아래를 향하면 한 등급 올림(가정).",
+              en: "Suggested severity by energy decade: under 1 J → 1, under 10 J → 2, under 100 J → 3, else 4; a sharp edge or point facing down adds one grade. These edges are assumptions about the energy released, not predictions of injury. The supervisor sets the grade, knowing who and what is below.",
+              ko: "중대성 제안은 에너지 자릿수로 정함: 1 J 미만 1, 10 J 미만 2, 100 J 미만 3, 그 밖 4. 날카로운 부분이 아래를 향하면 한 등급 올림. 경계는 풀려나는 에너지에 대한 가정이지 다칠 정도의 예측이 아님. 아래에 누가, 무엇이 있는지 아는 관리감독자가 등급을 정함.",
             },
           ],
           h.id,
@@ -333,6 +312,9 @@ export class ToolBox {
       case "risk_rating": {
         const l = this.find(args.likelihood_call);
         const s = this.find(args.severity_call);
+        if (!["tipover_margin", "move_target", "ladder_angle"].includes(l.tool)) {
+          throw new ToolError("likelihood_call must be a tipover_margin, move_target or ladder_angle result");
+        }
         const lg = l.result.likelihood_grade ?? l.result.residual_likelihood_grade;
         if (typeof lg !== "number") throw new ToolError("likelihood_call has no likelihood grade");
         if (s.tool !== "severity_grade") throw new ToolError("severity_call must be a severity_grade result");
@@ -354,32 +336,32 @@ export class ToolBox {
           l.hazardId,
         );
       }
-      case "required_margin": {
+      case "move_target": {
         const h = this.hazard(args.hazard_id);
         const m = this.edge(h);
-        const target = clampAssumption(args.target_probability, 0.001, 1e-6, 0.5);
-        const { nudges, custom } = nudgesFrom(args, this.nudgeDefaults);
-        const required = requiredMargin(target, nudges);
-        const moveBy = Math.max(0, required - m.dP5M);
-        const band = likelihoodGrade(target);
+        const custom = typeof args.target_d_m === "number";
+        const target = clampAssumption(args.target_d_m, CONTROL_TARGET_MARGIN_M, CONTROL_TARGET_RANGE_M.min, CONTROL_TARGET_RANGE_M.max);
+        const plan = moveTarget(m.dP5M, target);
         return this.record(
           name,
           args,
           {
-            target_probability: target,
-            required_d_m: required,
+            required_d_m: plan.targetM,
             current_d_p5_m: m.dP5M,
-            move_by_m: moveBy,
-            residual_likelihood_grade: band.grade,
-            residual_likelihood_label_en: band.label.en,
-            residual_likelihood_label_ko: band.label.ko,
+            move_by_m: plan.moveByM,
+            residual_likelihood_grade: plan.residual.grade,
+            residual_likelihood_label_en: plan.residual.label.en,
+            residual_likelihood_label_ko: plan.residual.label.ko,
           },
           [
-            nudgeText(nudges, custom),
+            custom
+              ? { en: `Target margin ${formatTarget(target)} chosen by the agent.`, ko: `목표 여유 ${formatTarget(target)}는 에이전트가 정함.` }
+              : { en: `Target margin ${formatTarget(target)} is the default (assumption).`, ko: `목표 여유 ${formatTarget(target)}는 기본값(가정).` },
             {
-              en: "Move distance is measured from the lower 5% of the measured margin, so the target holds despite measurement error.",
-              ko: "옮길 거리는 측정 여유의 하위 5% 값에서 계산해 측정 오차가 있어도 목표가 유지되게 함.",
+              en: "The move is counted from the lower 5% of the measured margin, so the target holds despite measurement error. Whether there is room to move it is for the supervisor to check.",
+              ko: "옮길 거리는 측정 여유의 하위 5% 값에서 셈해 측정 오차가 있어도 목표가 유지되게 함. 옮길 자리가 있는지는 관리감독자가 확인.",
             },
+            marginRuleText(),
           ],
           h.id,
         );
@@ -390,7 +372,23 @@ export class ToolBox {
         const check = ladderCheck(m.angleFromGroundDeg);
         const off = Math.abs(check.deviationDeg);
         const grade = off <= LADDER_REFERENCE.toleranceDeg ? 2 : off <= 2 * LADDER_REFERENCE.toleranceDeg ? 4 : 5;
-        const band = LIKELIHOOD_BANDS.find((b) => b.grade === grade) ?? LIKELIHOOD_BANDS[0];
+        const label = LIKELIHOOD_LABELS[grade];
+        const assumptions: Text[] = [
+          {
+            en: `Reference: ${LADDER_REFERENCE.source}. ${LADDER_REFERENCE.appliesTo.en} Likelihood suggestion (within ±5° = 2, within ±10° = 4, else 5) is an assumption.`,
+            ko: `기준: ${LADDER_REFERENCE.source}. ${LADDER_REFERENCE.appliesTo.ko} 가능성 제안(±5° 이내 2, ±10° 이내 4, 그 밖 5)은 가정.`,
+          },
+          {
+            en: "The angle alone does not show whether the ladder is secured, on firm footing or extends far enough above the landing.",
+            ko: "각도만으로는 사다리가 고정됐는지, 바닥이 단단한지, 위쪽으로 충분히 올라와 있는지 알 수 없음.",
+          },
+        ];
+        if (m.cameraPitchDeg !== null && Math.abs(m.cameraPitchDeg) > SIDE_VIEW_MAX_PITCH_DEG) {
+          assumptions.push({
+            en: `The phone was pitched ${Math.abs(m.cameraPitchDeg).toFixed(0)}°, so the angle may be off; photograph the ladder from the side.`,
+            ko: `휴대폰이 앞뒤로 ${Math.abs(m.cameraPitchDeg).toFixed(0)}° 기울어 각도가 틀릴 수 있음. 사다리를 옆에서 찍을 것.`,
+          });
+        }
         return this.record(
           name,
           args,
@@ -400,16 +398,11 @@ export class ToolBox {
             reference_deg: check.referenceDeg,
             deviation_deg: check.deviationDeg,
             verdict: check.verdict,
-            likelihood_grade: band.grade,
-            likelihood_label_en: band.label.en,
-            likelihood_label_ko: band.label.ko,
+            likelihood_grade: grade,
+            likelihood_label_en: label.en,
+            likelihood_label_ko: label.ko,
           },
-          [
-            {
-              en: `Reference: ${LADDER_REFERENCE.source}. Likelihood mapping (within ±5° = 2, within ±10° = 4, else 5) is an assumption.`,
-              ko: `기준: ${LADDER_REFERENCE.source}. 가능성 대응(±5° 이내 2, ±10° 이내 4, 그 밖 5)은 가정.`,
-            },
-          ],
+          assumptions,
           h.id,
         );
       }
@@ -417,4 +410,8 @@ export class ToolBox {
         throw new ToolError(`unknown tool ${name}`);
     }
   }
+}
+
+function formatTarget(m: number): string {
+  return `${Math.round(m * 100)} cm`;
 }

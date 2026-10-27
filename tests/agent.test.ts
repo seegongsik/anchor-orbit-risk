@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Hazard } from "../src/assessment/types.js";
 import { degToRad } from "../src/physics/geometry.js";
 import { marginMonteCarlo, plumbFromDown } from "../src/physics/plumb.js";
-import { fallProbabilityFromSamples } from "../src/risk/assess.js";
-import { DEFAULT_NUDGES } from "../src/risk/config.js";
+import { marginLikelihood } from "../src/risk/assess.js";
 import { runAssessment, type ChatFn, type TraceEvent } from "../server/agent.js";
 import { checkSubmission } from "../src/assessment/checker.js";
 import { SparkError, type SparkReply, type ToolCall } from "../server/spark.js";
@@ -39,12 +38,12 @@ function syntheticHazard(): Hazard {
       dP5M: mc.percentiles.p5,
       dP95M: mc.percentiles.p95,
       pUnstableNow: mc.pUnstable,
-      samplesM: Array.from(mc.samples),
       iterations: mc.iterations,
       seed: mc.seed,
       gravitySource: "synthetic",
       gravityTiltDeg: 0,
       shiftWithoutGravityM: 0,
+      cameraPitchDeg: null,
       comHeightAboveEdgeM: 0.06,
       dropHeightM: null,
       metersPerPixel: 0.001,
@@ -87,11 +86,11 @@ const goodRow = {
   hazard_id: "h1",
   hazard: { en: "Ceramic mug close to the desk edge", ko: "책상 가장자리에 가까운 도자기 머그컵" },
   current_state: { en: "Its centre is {call_1.d_m} from the edge.", ko: "무게중심이 가장자리에서 {call_1.d_m} 떨어져 있다." },
-  controls: [{ en: "Move it inward by at least {call_6.move_by_m}.", ko: "안쪽으로 {call_6.move_by_m} 이상 옮긴다." }],
-  likelihood_from: "call_2",
-  severity_from: "call_4",
-  risk_from: "call_5",
-  residual_from: "call_7",
+  controls: [{ en: "Move it inward by at least {call_5.move_by_m}.", ko: "안쪽으로 {call_5.move_by_m} 이상 옮긴다." }],
+  likelihood_from: "call_1",
+  severity_from: "call_3",
+  risk_from: "call_4",
+  residual_from: "call_6",
 };
 const summary = { en: "One hazard assessed.", ko: "위험 요인 하나를 평가했다." };
 
@@ -99,17 +98,13 @@ describe("assessment agent (scripted fake model)", () => {
   it("runs native tool calls, rejects a typed number, then accepts", async () => {
     const events: TraceEvent[] = [];
     const chat = scripted([
+      reply([call("tipover_margin", { hazard_id: "h1" }), call("drop_energy", { hazard_id: "h1" })]),
       reply([
-        call("tipover_margin", { hazard_id: "h1" }),
-        call("fall_probability", { hazard_id: "h1" }),
-        call("drop_energy", { hazard_id: "h1" }),
+        call("severity_grade", { drop_call: "call_2", use: "high" }),
+        call("risk_rating", { likelihood_call: "call_1", severity_call: "call_3" }),
+        call("move_target", { hazard_id: "h1" }),
       ]),
-      reply([
-        call("severity_grade", { drop_call: "call_3", use: "high" }),
-        call("risk_rating", { likelihood_call: "call_2", severity_call: "call_4" }),
-        call("required_margin", { hazard_id: "h1", target_probability: 0.001 }),
-      ]),
-      reply([call("risk_rating", { likelihood_call: "call_6", severity_call: "call_4" })]),
+      reply([call("risk_rating", { likelihood_call: "call_5", severity_call: "call_3" })]),
       reply([
         call("submit_assessment", {
           rows: [{ ...goodRow, controls: [{ en: "Move it 5 cm inward.", ko: "5 cm 안쪽으로 옮긴다." }] }],
@@ -127,16 +122,19 @@ describe("assessment agent (scripted fake model)", () => {
     expect(checks[1]).toMatchObject({ ok: true });
 
     const row = run.table.rows[0];
-    const expectedP = fallProbabilityFromSamples(syntheticHazard().measurement!.type === "edge" ? (syntheticHazard().measurement as { samplesM: number[] }).samplesM : [], DEFAULT_NUDGES);
-    const fall = run.results.find((r) => r.id === "call_2");
-    expect(fall?.result.p_fall).toBeCloseTo(expectedP, 12);
-    expect(row.likelihood?.grade).toBe(fall?.result.likelihood_grade);
-    expect(row.severity?.grade).toBe(1);
-    expect(row.risk?.score).toBe(Number(fall?.result.likelihood_grade) * 1);
-    expect(row.residual?.likelihood).toBe(2);
+    const m = syntheticHazard().measurement;
+    const tip = run.results.find((r) => r.id === "call_1");
+    expect(m?.type).toBe("edge");
+    if (m?.type === "edge") expect(tip?.result.likelihood_grade).toBe(marginLikelihood(m.dP5M).grade);
+    expect(row.likelihood).toMatchObject({ grade: tip?.result.likelihood_grade, by: "tool" });
+    expect(row.likelihood?.suggested).toBe(row.likelihood?.grade);
+    // A 0.3 to 0.4 kg mug from the assumed 0.75 m desk: up to 2.94 J, the 1-10 J decade.
+    expect(row.severity?.grade).toBe(2);
+    expect(row.risk?.score).toBe(Number(tip?.result.likelihood_grade) * 2);
+    expect(row.residual?.likelihood).toBe(1);
     expect(row.controls[0].en).toMatch(/^Move it inward by at least \d/);
     expect(row.currentState.en).not.toContain("{call_");
-    expect(run.table.rows[0].evidence.length).toBe(7);
+    expect(run.table.rows[0].evidence.length).toBe(6);
   });
 
   it("falls back to the JSON protocol when native tools are refused", async () => {
@@ -144,9 +142,9 @@ describe("assessment agent (scripted fake model)", () => {
     const json = (value: unknown) => reply([], JSON.stringify(value));
     const chat = scripted([
       new SparkError(400, "tools are not supported for this model"),
-      json({ calls: [{ tool: "tipover_margin", args: { hazard_id: "h1" } }, { tool: "fall_probability", args: { hazard_id: "h1" } }, { tool: "drop_energy", args: { hazard_id: "h1" } }] }),
-      json({ calls: [{ tool: "severity_grade", args: { drop_call: "call_3" } }, { tool: "risk_rating", args: { likelihood_call: "call_2", severity_call: "call_4" } }, { tool: "required_margin", args: { hazard_id: "h1", target_probability: 0.001 } }] }),
-      json({ calls: [{ tool: "risk_rating", args: { likelihood_call: "call_6", severity_call: "call_4" } }] }),
+      json({ calls: [{ tool: "tipover_margin", args: { hazard_id: "h1" } }, { tool: "drop_energy", args: { hazard_id: "h1" } }] }),
+      json({ calls: [{ tool: "severity_grade", args: { drop_call: "call_2" } }, { tool: "risk_rating", args: { likelihood_call: "call_1", severity_call: "call_3" } }, { tool: "move_target", args: { hazard_id: "h1" } }] }),
+      json({ calls: [{ tool: "risk_rating", args: { likelihood_call: "call_5", severity_call: "call_3" } }] }),
       reply([], "```json\n" + JSON.stringify({ submit: { rows: [goodRow], summary } }) + "\n```"),
     ]);
     const run = await runAssessment({ hazards: [syntheticHazard()] }, { chat, onEvent: (e) => events.push(e) });
@@ -167,12 +165,11 @@ describe("number checker", () => {
     const hazards = [syntheticHazard()];
     const box = new ToolBox(hazards);
     box.run("tipover_margin", { hazard_id: "h1" });
-    box.run("fall_probability", { hazard_id: "h1" });
     box.run("drop_energy", { hazard_id: "h1" });
-    box.run("severity_grade", { drop_call: "call_3" });
-    box.run("risk_rating", { likelihood_call: "call_2", severity_call: "call_4" });
-    box.run("required_margin", { hazard_id: "h1", target_probability: 0.001 });
-    box.run("risk_rating", { likelihood_call: "call_6", severity_call: "call_4" });
+    box.run("severity_grade", { drop_call: "call_2" });
+    box.run("risk_rating", { likelihood_call: "call_1", severity_call: "call_3" });
+    box.run("move_target", { hazard_id: "h1" });
+    box.run("risk_rating", { likelihood_call: "call_5", severity_call: "call_3" });
     return { hazards, results: box.results, place: "", createdAt: "2026-10-27", models: [] };
   }
 
@@ -183,9 +180,9 @@ describe("number checker", () => {
   });
 
   it("rejects a risk rating that does not match the cited grades", () => {
-    const wrong = checkSubmission({ rows: [{ ...goodRow, risk_from: "call_7" }], summary }, prepared());
+    const wrong = checkSubmission({ rows: [{ ...goodRow, risk_from: "call_6" }], summary }, prepared());
     expect(wrong.ok).toBe(false);
-    if (!wrong.ok) expect(wrong.problems.join(" ")).toMatch(/must rate call_2 with call_4/);
+    if (!wrong.ok) expect(wrong.problems.join(" ")).toMatch(/must rate call_1 with call_3/);
   });
 
   it("rejects placeholders to unknown results or non-numeric fields", () => {
@@ -216,9 +213,50 @@ describe("local assessment (no agent)", () => {
     });
     expect(table.rows).toHaveLength(2);
     expect(table.rows[0].likelihood).not.toBeNull();
-    expect(table.rows[0].residual?.likelihood).toBe(2);
+    expect(table.rows[0].residual?.likelihood).toBe(1);
     expect(table.rows[1].likelihood).toBeNull();
     expect(table.rows[1].hazard.en).toBe("A4 binder");
-    expect(results.length).toBe(7);
+    expect(results.length).toBe(6);
+  });
+
+  it("reports the margin before and after a re-shoot", async () => {
+    const { localAssessment } = await import("../src/assessment/local.js");
+    const hazard = { ...syntheticHazard(), before: { dM: 0.004, dP5M: 0.001, capturedAt: "2026-10-27T01:00:00.000Z" } };
+    const { table, results } = localAssessment([hazard], { place: "test", createdAt: "2026-10-27" });
+    const tip = results.find((r) => r.tool === "tipover_margin");
+    expect(tip?.result.before_d_p5_m).toBe(0.001);
+    const m = hazard.measurement;
+    if (m?.type === "edge") expect(tip?.result.change_d_p5_m).toBeCloseTo(m.dP5M - 0.001, 12);
+    expect(table.rows[0].currentState.en).toContain("Measured again after a change");
+    expect(table.rows[0].measurements.some((x) => x.label.en === "Lower 5%: before → after")).toBe(true);
+  });
+});
+
+describe("tool and checker guards", () => {
+  it("rates risk only from a likelihood result and a severity result", () => {
+    const box = new ToolBox([syntheticHazard()]);
+    box.run("tipover_margin", { hazard_id: "h1" });
+    box.run("drop_energy", { hazard_id: "h1" });
+    box.run("severity_grade", { drop_call: "call_2" });
+    expect(() => box.run("risk_rating", { likelihood_call: "call_2", severity_call: "call_3" })).toThrow(/likelihood_call/);
+    expect(() => box.run("move_target", { hazard_id: "h1", target_d_m: 5 })).not.toThrow();
+    expect(box.results.at(-1)?.result.required_d_m).toBe(0.3);
+  });
+
+  it("rejects a residual risk rated with a different severity", () => {
+    const box = new ToolBox([syntheticHazard()]);
+    box.run("tipover_margin", { hazard_id: "h1" });
+    box.run("drop_energy", { hazard_id: "h1" });
+    box.run("severity_grade", { drop_call: "call_2" });
+    box.run("risk_rating", { likelihood_call: "call_1", severity_call: "call_3" });
+    box.run("move_target", { hazard_id: "h1" });
+    box.run("severity_grade", { drop_call: "call_2", use: "low" });
+    box.run("risk_rating", { likelihood_call: "call_5", severity_call: "call_6" });
+    const outcome = checkSubmission(
+      { rows: [{ ...goodRow, residual_from: "call_7" }], summary },
+      { hazards: [syntheticHazard()], results: box.results, place: "", createdAt: "2026-10-27", models: [] },
+    );
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.problems.join(" ")).toMatch(/same severity_grade/);
   });
 });

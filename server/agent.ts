@@ -5,7 +5,6 @@
  * plain JSON protocol otherwise.
  */
 import type { Hazard } from "../src/assessment/types.js";
-import type { Nudges } from "../src/risk/assess.js";
 import type { AssessmentTable } from "../src/risk/table.js";
 import { checkSubmission } from "../src/assessment/checker.js";
 import { MUSE_SPARK_OPEN_MODEL } from "./meta-client.js";
@@ -61,13 +60,14 @@ export const SUBMIT_SPEC: ToolSpec = {
 
 export const SYSTEM_PROMPT = `You help a workplace supervisor write a risk assessment (likelihood x severity) for things photographed with a phone.
 The phone measured each hazard with its gravity sensor and Meta SAM 3.1 segmentation. You see those measurements only through tools.
+The tools suggest grades from measured geometry and energy. The supervisor confirms or changes every grade afterwards, so your table is a draft for them.
 
 Rules:
-1. Every number in the assessment comes from a tool result. In text you may not type digits at all. To show a number, write a placeholder {call_N.field} naming a numeric field of a tool result, for example "Move it inward by at least {call_6.move_by_m}." The server fills placeholders in and formats units.
-2. For each measured edge hazard call: tipover_margin; fall_probability; drop_energy; severity_grade on that drop_energy result; risk_rating with the fall_probability and severity_grade results. Then propose controls. For the main control call required_margin with target_probability 0.001, then risk_rating with the required_margin result and the same severity_grade result, and cite it as residual_from.
+1. Every number in the assessment comes from a tool result. In text you may not type digits at all. To show a number, write a placeholder {call_N.field} naming a numeric field of a tool result, for example "Move it inward by at least {call_5.move_by_m}." The server fills placeholders in and formats units.
+2. For each measured edge hazard call: tipover_margin (it gives the margin and a suggested likelihood grade); drop_energy; severity_grade on that drop_energy result; risk_rating with the tipover_margin and severity_grade results. Then propose controls. For the main control call move_target, then risk_rating with the move_target result and the same severity_grade result, and cite it as residual_from. Keep the default target margin unless the scene clearly needs a larger one, and say why.
 3. For a ladder hazard call: ladder_angle; drop_energy (a person on the ladder, defaults are set); severity_grade; risk_rating.
-4. Change the nudging assumptions only when the scene clearly calls for it (a busy shared desk, a shelf nobody touches), and say why in current_state.
-5. Write every text field in English (en) and Korean (ko), in short plain sentences. Name objects by what they are, never by brand. Do not describe or identify people. Give no medical advice and do not predict injuries; speak about the margin, the probability and the energy.
+4. If tipover_margin reports a margin before and after a change, say in current_state how the margin changed, with placeholders.
+5. Write every text field in English (en) and Korean (ko), in short plain sentences. Name objects by what they are, never by brand. Do not describe or identify people. Give no medical advice and do not predict injuries or the chance of an accident: speak about the measured margin, how far the object would have to move, and the impact energy. Call the centre of mass an estimate.
 6. Order controls by the hierarchy: remove the hazard, move it, add a physical barrier (edge lip, tray, anti-slip mat), then rules and signs.
 7. You may call several tools in one turn. Finish by calling submit_assessment once, with one row per hazard.`;
 
@@ -112,6 +112,7 @@ function hazardBrief(hazards: Hazard[]): string {
       mass_kg: h.massKg ? `${h.massKg.low} to ${h.massKg.high} (${h.massKg.source})` : null,
       sharp_edge_down: h.sharpEdgeDown ?? null,
       measured: h.measurement ? h.measurement.type : "not measured",
+      measured_again_after_a_change: h.before !== undefined,
     })),
   );
 }
@@ -134,14 +135,13 @@ export async function runAssessment(
     imageDataUrl?: string;
     createdAt?: string;
     models?: string[];
-    nudges?: Nudges;
   },
   deps: { chat: ChatFn; onEvent?: (event: TraceEvent) => void; maxTurns?: number; maxRejections?: number },
 ): Promise<AssessmentRun> {
   const emit = deps.onEvent ?? (() => {});
   const maxTurns = deps.maxTurns ?? 14;
   const maxRejections = deps.maxRejections ?? 3;
-  const box = new ToolBox(input.hazards, input.nudges);
+  const box = new ToolBox(input.hazards);
   const place = input.place ?? "";
   const createdAt = input.createdAt ?? new Date().toISOString().slice(0, 10);
   const models = input.models ?? ["sam-3.1", MUSE_SPARK_OPEN_MODEL];
@@ -151,11 +151,7 @@ export async function runAssessment(
   const userContent: ContentPart[] = [
     {
       type: "text",
-      text: `Place: ${place || "not given"}.\nThe supervisor's nudging assumptions for this place (tool defaults): ${
-        input.nudges
-          ? `${input.nudges.nudgesPerDay} nudges a day of ${input.nudges.nudgeStdM} m std over ${input.nudges.horizonDays} days`
-          : "the built-in defaults"
-      }. Keep them unless the photo clearly contradicts them.\nHazards found in the photo (measured by the phone where noted):\n${hazardBrief(input.hazards)}\nAssess every hazard, then submit.`,
+      text: `Place: ${place || "not given"}.\nHazards found in the photo (measured by the phone where noted):\n${hazardBrief(input.hazards)}\nAssess every hazard, then submit.`,
     },
   ];
   if (input.imageDataUrl) userContent.push({ type: "image_url", image_url: { url: input.imageDataUrl } });
@@ -165,7 +161,7 @@ export async function runAssessment(
     { role: "user", content: userContent },
   ];
   let rejections = 0;
-  let nudges = 0;
+  let reminders = 0;
   let totalTokens = 0;
 
   const execute = (name: string, args: unknown): Record<string, unknown> => {
@@ -234,8 +230,8 @@ export async function runAssessment(
           switchToJson("the model wrote tool calls as text");
           continue;
         }
-        nudges += 1;
-        if (nudges > 2) throw new Error("the agent stopped without submitting an assessment");
+        reminders += 1;
+        if (reminders > 2) throw new Error("the agent stopped without submitting an assessment");
         messages.push({ role: "assistant", content: reply.content || null });
         messages.push({ role: "user", content: "Continue: call the tools you still need, then call submit_assessment." });
         continue;
@@ -283,8 +279,8 @@ export async function runAssessment(
     }
     const calls = Array.isArray(parsed?.calls) ? parsed.calls : [];
     if (calls.length === 0) {
-      nudges += 1;
-      if (nudges > 2) throw new Error("the agent stopped without submitting an assessment");
+      reminders += 1;
+      if (reminders > 2) throw new Error("the agent stopped without submitting an assessment");
       messages.push({ role: "user", content: 'Call tools with {"calls": [...]} or submit with {"submit": {...}}.' });
       continue;
     }
