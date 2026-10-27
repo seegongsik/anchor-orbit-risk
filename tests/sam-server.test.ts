@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { maskCentroid, maskFromRuns } from "../src/physics/mask.js";
+import { samPrompt } from "../server/routes.js";
+import { InputError } from "../server/validate.js";
 import {
   buildSamImageBody,
   buildSamVideoBody,
@@ -74,6 +76,29 @@ describe("SAM 3.1 request shapes (official protocol)", () => {
       objects: [{ id: 1, prompts: [{ points: [{ x: 20, y: 40 }, { x: 30, y: 50, label: "negative" }] }] }],
     });
     expect(text).toBe("<0f>1<|point;x=20;y=40;w=640;h=480|>-<|point;x=30;y=50;w=640;h=480|>");
+  });
+
+  it("turns a dragged box and correction taps into one object prompt", () => {
+    const prompt = samPrompt({
+      kind: "region",
+      width: 640,
+      height: 480,
+      box: { left: 100.6, top: -5, right: 300.2, bottom: 260 },
+      points: [{ x: 150, y: 120 }, { x: 250.9, y: 200, label: "negative" }],
+    });
+    expect(promptText(prompt)).toBe(
+      "<0f>1<|box;x1=100;y1=0;x2=300;y2=259;w=640;h=480|><|point;x=150;y=120;w=640;h=480|>-<|point;x=250;y=200;w=640;h=480|>",
+    );
+    expect(promptText(samPrompt({ kind: "points", width: 640, height: 480, points: [{ x: 1, y: 2 }] }))).toBe(
+      "<0f>1<|point;x=1;y=2;w=640;h=480|>",
+    );
+  });
+
+  it("refuses a region prompt with nothing in it, a sliver box or too many taps", () => {
+    expect(() => samPrompt({ kind: "region", width: 640, height: 480, points: [] })).toThrow(InputError);
+    expect(() => samPrompt({ kind: "region", width: 640, height: 480, box: { left: 10, top: 10, right: 11, bottom: 90 } })).toThrow(InputError);
+    const nine = Array.from({ length: 9 }, (_, i) => ({ x: i, y: i }));
+    expect(() => samPrompt({ kind: "region", width: 640, height: 480, points: nine })).toThrow(InputError);
   });
 
   it("rejects an empty noun phrase and a non-image data URL", () => {

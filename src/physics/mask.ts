@@ -57,6 +57,18 @@ export function maskFromRuns(input: RunMask): BinaryMask {
   };
 }
 
+/** Whether the source pixel at p is set. Points outside the raster are not. */
+export function maskContains(mask: BinaryMask, p: Vec2): boolean {
+  const ox = mask.originX ?? 0;
+  const oy = mask.originY ?? 0;
+  const sx = mask.scaleX ?? 1;
+  const sy = mask.scaleY ?? 1;
+  const x = Math.floor((p.x - ox) / sx);
+  const y = Math.floor((p.y - oy) / sy);
+  if (x < 0 || y < 0 || x >= mask.width || y >= mask.height) return false;
+  return mask.data[y * mask.width + x] === 1;
+}
+
 /** Calls fn with the source-pixel centre of every set pixel. */
 export function forEachMaskPixel(
   mask: BinaryMask,

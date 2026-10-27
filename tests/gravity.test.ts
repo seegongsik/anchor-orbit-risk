@@ -7,6 +7,9 @@ import {
   pitchFromProjection,
   projectDownOntoRearImage,
   requestMotionPermission,
+  SIGN_CHECK,
+  SignEstimate,
+  signVote,
   worldDownFromAccelerationIncludingGravity,
 } from "../src/sensors/gravity.js";
 
@@ -79,5 +82,56 @@ describe("gravity mapping", () => {
     await expect(
       requestMotionPermission({ requestPermission: async () => "denied" }),
     ).resolves.toBe("denied");
+  });
+});
+
+describe("browser gravity sign", () => {
+  const upright = (sign: 1 | -1, rollDeg = 0) => {
+    const r = (rollDeg * Math.PI) / 180;
+    // The spec's upright portrait reading is y ≈ +g; a browser with the opposite sign sends -g.
+    return {
+      accelerationIncludingGravity: { x: sign * STANDARD_G * Math.sin(r), y: sign * STANDARD_G * Math.cos(r), z: 0 },
+      screenAngleDeg: 0,
+      timestampMs: 0,
+    };
+  };
+
+  it("votes from an upright phone and abstains when flat or sideways", () => {
+    expect(signVote(upright(1))).toBe(1);
+    expect(signVote(upright(-1))).toBe(-1);
+    expect(signVote(upright(1, 20))).toBe(1);
+    expect(signVote(upright(1, 60))).toBe(0);
+    expect(signVote({ accelerationIncludingGravity: { x: 0, y: 0, z: STANDARD_G }, screenAngleDeg: 0, timestampMs: 0 })).toBe(0);
+  });
+
+  it("settles only after enough agreeing votes, and keeps +1 until then", () => {
+    const est = new SignEstimate();
+    expect(est.state).toBe("unknown");
+    for (let i = 0; i < SIGN_CHECK.minVotes - 1; i += 1) est.add(-1);
+    expect(est.state).toBe("unknown");
+    expect(est.sign).toBe(1);
+    est.add(-1);
+    expect(est.state).toBe("inverted");
+    expect(est.sign).toBe(-1);
+    est.add(0);
+    expect(est.counts).toEqual({ asSpecified: 0, inverted: SIGN_CHECK.minVotes });
+  });
+
+  it("does not settle on mixed votes", () => {
+    const est = new SignEstimate();
+    for (let i = 0; i < 30; i += 1) est.add(i % 2 === 0 ? 1 : -1);
+    expect(est.state).toBe("unknown");
+  });
+
+  it("gives the same plumb direction and pitch sign for both browser signs once the sign is known", () => {
+    const tilt = Math.PI / 9; // camera looking 20° down
+    const spec = { x: 0, y: STANDARD_G * Math.cos(tilt), z: STANDARD_G * Math.sin(tilt) };
+    const a = imageDownFromSample({ accelerationIncludingGravity: spec, screenAngleDeg: 0, timestampMs: 0 });
+    const flipped = { x: -spec.x, y: -spec.y, z: -spec.z };
+    const b = imageDownFromSample({ accelerationIncludingGravity: flipped, screenAngleDeg: 0, timestampMs: 0, sign: -1 });
+    expect(b.v).toBeCloseTo(a.v, 9);
+    expect(a.v).toBeGreaterThan(0);
+    expect(pitchFromProjection(a.towardUser, a.magnitude)).toBeCloseTo(-20, 9);
+    expect(pitchFromProjection(b.towardUser, b.magnitude)).toBeCloseTo(-20, 9);
   });
 });

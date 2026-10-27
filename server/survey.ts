@@ -8,9 +8,10 @@ import { extractJsonObject, type ChatMessage, type SparkReply } from "./spark.js
 
 export const SURVEY_PROMPT = `You look at a phone photo for a workplace safety supervisor.
 List up to five things that could fall off an edge or tip over, and any leaning ladder.
+The object is the thing that could fall, never the furniture it rests on: on a desk with a mug near its edge, the object is the mug and the support is the desk.
 For each item give:
 - kind: "edge" (an object resting on a table, desk, shelf or bench, near its edge), "ladder" (a leaning ladder) or "other"
-- object: a short English noun phrase that names it for an image segmentation model, two or three words, such as "white mug", "scissors" or "cardboard box"
+- object: a short English noun phrase that names it for an image segmentation model, two or three words, with its colour or another visible feature so that it picks out this one item among similar ones, such as "white mug", "red scissors" or "small cardboard box"
 - support: a short English noun phrase for what it rests on, such as "desk" or "shelf" (empty for a ladder)
 - below: what is directly below the edge or the ladder
 - material: its main material

@@ -16,7 +16,7 @@ import {
   ApiError,
   assess,
   getStatus,
-  samAtPoint,
+  samRegion,
   samConcept,
   sparkCheck,
   survey,
@@ -24,10 +24,21 @@ import {
   type SamMaskOut,
   type TraceLine,
 } from "./api.js";
-import { drawLiveOverlay, GravityReader, startCamera, stillFromSource, type Still } from "./camera.js";
+import { drawLiveOverlay, GravityReader, sensorDetailsText, startCamera, stillFromSource, type Still } from "./camera.js";
 import { canvasPoint, drawStill } from "./draw.js";
 import { downloadCsv, downloadText, openPrintable, renderTable, type BeforeAfter } from "./table-view.js";
 import { TiltMeter } from "./tilt-meter.js";
+import {
+  classifyGesture,
+  instanceAt,
+  MAX_PROMPT_POINTS,
+  boxWith,
+  maskBox,
+  withPoint,
+  type Gesture,
+  type PromptBox,
+  type RegionPrompt,
+} from "./sam-prompt.js";
 
 type Kind = "edge" | "ladder" | "tilt";
 type Tool = "object" | "table" | "edge" | "scale" | "floor" | "foot" | "top";
@@ -50,11 +61,11 @@ const TOOLS: Record<Kind, { id: Tool; label: string }[]> = {
 
 const HINTS: Record<Tool, { sam: string; manual: string }> = {
   object: {
-    sam: "Tap the object that could fall. SAM 3.1 outlines it.",
+    sam: "Drag a box around the object that could fall, or tap it. SAM 3.1 outlines it.",
     manual: "Tap the object's outline corner by corner, then Close shape.",
   },
   table: {
-    sam: "Tap the table or shelf it rests on. SAM 3.1 outlines it and finds the edge.",
+    sam: "Drag a box around the table or shelf top next to the object, or tap it. SAM 3.1 outlines it and finds the edge.",
     manual: "Tap anywhere on the table top, then use Edge.",
   },
   edge: {
@@ -90,20 +101,32 @@ function emptyMarks(): Marks {
   return { polygonDraft: [], scaleTaps: [], ladder: [] };
 }
 
+/** A measurement waiting for a step not yet done, as opposed to a geometry problem. */
+class NeedsInput extends Error {
+  constructor(
+    message: string,
+    readonly step: Tool,
+  ) {
+    super(message);
+  }
+}
+
 function must<T extends HTMLElement = HTMLElement>(root: ParentNode, selector: string): T {
   const el = root.querySelector(selector);
   if (!(el instanceof HTMLElement)) throw new Error(`missing ${selector}`);
   return el as T;
 }
 
-function pickMask(masks: SamMaskOut[], prefer: "confidence" | "area"): SamMaskOut | null {
-  if (masks.length === 0) return null;
-  const sorted = [...masks].sort((a, b) =>
+function rankMasks(masks: SamMaskOut[], prefer: "confidence" | "area"): SamMaskOut[] {
+  return [...masks].sort((a, b) =>
     prefer === "confidence"
       ? (b.confidence ?? 0) - (a.confidence ?? 0) || b.pixelCount - a.pixelCount
       : b.pixelCount - a.pixelCount,
   );
-  return sorted[0];
+}
+
+function pickMask(masks: SamMaskOut[], prefer: "confidence" | "area"): SamMaskOut | null {
+  return rankMasks(masks, prefer)[0] ?? null;
 }
 
 function escapeText(value: string): string {
@@ -132,6 +155,7 @@ export function mountApp(root: HTMLElement): void {
         <img class="ghost hidden" id="ghost" alt="" />
         <canvas class="overlay" id="live-overlay"></canvas>
       </div>
+      <details class="hidden" id="sensor-box"><summary>Sensor details</summary><pre class="sensor" id="sensor-raw">–</pre></details>
       <div class="row">
         <button id="btn-capture" type="button" class="primary" disabled>Capture with gravity</button>
       </div>
@@ -154,8 +178,14 @@ export function mountApp(root: HTMLElement): void {
       <p class="hint" id="hint"></p>
       <div class="stage"><canvas id="still"></canvas></div>
       <div class="row">
+        <button id="btn-next" type="button" class="primary hidden">Next</button>
         <button id="btn-undo" type="button">Undo</button>
         <button id="btn-close" type="button" class="hidden">Close shape</button>
+        <button id="btn-hand" type="button" class="hidden">Draw by hand</button>
+      </div>
+      <div class="seg hidden" id="tap-mode">
+        <button type="button" data-mode="add" class="on">Tap adds</button>
+        <button type="button" data-mode="remove">Tap removes</button>
         <button id="btn-survey" type="button">Find hazards</button>
       </div>
       <div id="survey"></div>
@@ -178,6 +208,8 @@ export function mountApp(root: HTMLElement): void {
 
       <div id="tilt-panel" class="hidden">
         <h3 class="sub">Check the prediction on the real object</h3>
+        <label for="f-tilt-object">Object</label>
+        <input id="f-tilt-object" type="text" placeholder="for example: tissue box, 12 × 24 cm" />
         <p class="tiny">Stand the object on a board and photograph it from the side with the board level. Then lay the phone flat on the board next to it, tap Start, and raise one end of the board slowly until the object tips. A rubber mat stops it sliding first. Use something unbreakable, over a soft surface.</p>
         <div class="seg" id="tilt-side">
           <button type="button" data-side="auto" class="on">Easier side</button>
@@ -254,6 +286,9 @@ export function mountApp(root: HTMLElement): void {
   const notesEl = $("#notes");
   const surveyEl = $("#survey");
   const btnClose = $<HTMLButtonElement>("#btn-close");
+  const btnNext = $<HTMLButtonElement>("#btn-next");
+  const btnHand = $<HTMLButtonElement>("#btn-hand");
+  const tapModeEl = $("#tap-mode");
   const btnSurvey = $<HTMLButtonElement>("#btn-survey");
   const btnAdd = $<HTMLButtonElement>("#btn-add");
   const btnAgent = $<HTMLButtonElement>("#btn-agent");
@@ -277,6 +312,8 @@ export function mountApp(root: HTMLElement): void {
   const ghost = $<HTMLImageElement>("#ghost");
   const ghostNote = $("#ghost-note");
   const describeEl = $("#describe");
+  const sensorBox = $<HTMLDetailsElement>("#sensor-box");
+  const sensorRaw = $("#sensor-raw");
   const scaleGrid = $("#scale-grid");
   const tiltPanel = $("#tilt-panel");
   const tiltNow = $("#tilt-now");
@@ -304,6 +341,18 @@ export function mountApp(root: HTMLElement): void {
   let lang: Lang = "en";
   let busy = false;
   let synthetic = false;
+  type SamTarget = "object" | "table";
+  /** Each SAM 3.1 call on a target and what it returned, so Undo steps back without another call. */
+  let samSteps: Record<SamTarget, { prompt: RegionPrompt; mark: ObjectMark }[]> = { object: [], table: [] };
+  /** Every instance a concept prompt found; a tap picks one without another call. */
+  let instances: Record<SamTarget, ObjectMark[]> = { object: [], table: [] };
+  let handDraw = false;
+  /** After an outline exists, whether a tap adds a missed part or removes a wrong area. */
+  let tapMode: "add" | "remove" = "add";
+  let gesture: { id: number; start: Vec2 } | null = null;
+  let dragBox: PromptBox | undefined;
+  let pendingPrompt: RegionPrompt | undefined;
+  let lastOverlay: Parameters<typeof drawStill>[2] | null = null;
   /** The photo each hazard was last measured on, for re-shooting and before/after. */
   const captures = new Map<string, { dataUrl: string; capturedAt: string }>();
   const photos = new Map<string, BeforeAfter>();
@@ -326,6 +375,14 @@ export function mountApp(root: HTMLElement): void {
   const tiltLog: TiltRecord[] = [];
 
   const samReady = () => api?.modelApiKeyConfigured === true && !synthetic;
+  const useSam = () => samReady() && !handDraw;
+  /** The thing a gesture on the photo outlines with SAM 3.1 right now, if any. */
+  const samTarget = (): SamTarget | null => {
+    if (!useSam() || marks.polygonDraft.length > 0) return null;
+    if (tool === "object" && kind !== "ladder") return "object";
+    if (tool === "table" && kind === "edge") return "table";
+    return null;
+  };
   const sparkReady = () => api?.basetenApiKeyConfigured === true;
 
   function renderStatus(): void {
@@ -344,16 +401,34 @@ export function mountApp(root: HTMLElement): void {
     hint.className = `hint ${tone}`;
   }
 
+  function samHint(t: SamTarget): string {
+    const mark = t === "object" ? marks.object : marks.support;
+    const what = t === "table" ? "the table or shelf top next to the object" : kind === "tilt" ? "the standing object" : "the object that could fall";
+    if (!mark) return `Drag a box around ${what}, or tap it. SAM 3.1 outlines it.`;
+    const after = kind === "tilt" ? "Then use the tilt check below." : "Then tap Next.";
+    if (instances[t].length > 1 && samSteps[t].length === 0) {
+      return `SAM 3.1 found ${instances[t].length} of them. Tap the one you mean. None of them? Drag a box around it. ${after}`;
+    }
+    return `Outlined by SAM 3.1. Wrong thing? Drag a box around the right one. Edge off? Choose Tap adds or Tap removes, then tap the spot. ${after}`;
+  }
+
   function renderTools(): void {
     toolsEl.innerHTML = TOOLS[kind]
       .map((t) => `<button type="button" data-tool="${t.id}" class="${t.id === tool ? "on" : ""}">${t.label}</button>`)
       .join("");
-    const manual = !samReady() || (tool === "object" && marks.polygonDraft.length > 0);
-    if (kind === "tilt" && tool === "object") {
-      setHint(manual ? "Tap the standing object's outline corner by corner, then Close shape." : "Tap the object standing on the board. SAM 3.1 outlines it.");
-    } else {
-      setHint(HINTS[tool][manual ? "manual" : "sam"]);
-    }
+    const st = samTarget();
+    if (st) setHint(samHint(st));
+    else if (kind === "tilt" && tool === "object") setHint("Tap the standing object's outline corner by corner, then Close shape.");
+    else setHint(HINTS[tool][useSam() && marks.polygonDraft.length === 0 ? "sam" : "manual"]);
+    const markedHere = (tool === "object" && marks.object) || (tool === "table" && (marks.support || marks.manualSupportPoint));
+    btnNext.classList.toggle("hidden", !(kind === "edge" && markedHere));
+    btnHand.classList.toggle("hidden", !(samReady() && kind !== "ladder" && (tool === "object" || (tool === "table" && kind === "edge"))));
+    btnHand.textContent = handDraw ? "Use SAM 3.1" : "Draw by hand";
+    const outlined = st !== null && (st === "object" ? marks.object : marks.support)?.source === "sam-3.1";
+    tapModeEl.classList.toggle("hidden", !outlined);
+    tapModeEl.querySelectorAll<HTMLButtonElement>("button").forEach((b) => b.classList.toggle("on", b.dataset.mode === tapMode));
+    // A drag on the photo draws a box instead of scrolling the page.
+    stillCanvas.style.touchAction = st ? "none" : "manipulation";
     describeEl.classList.toggle("hidden", kind === "tilt");
     scaleGrid.classList.toggle("hidden", kind === "tilt");
     btnSurvey.classList.toggle("hidden", kind === "tilt");
@@ -401,15 +476,16 @@ export function mountApp(root: HTMLElement): void {
     tipResult = null;
     notesEl.innerHTML = "";
     let message = "";
+    let waitingFor: Tool | null = null;
     if (still) {
       try {
         const s: Scale | null = scale();
         if (kind === "edge") {
-          if (!marks.object) throw new Error("Mark the object.");
+          if (!marks.object) throw new NeedsInput("Mark the object.", "object");
           if (!marks.support && !(marks.manualEdge && marks.manualSupportPoint)) {
-            throw new Error(marks.manualEdge ? "Tap a point on the table (Table)." : "Mark the table, or tap its edge.");
+            throw new NeedsInput(marks.manualEdge ? "Tap a point on the table (Table)." : "Mark the table, or tap its edge.", "table");
           }
-          if (!s) throw new Error("Mark a known length with two taps.");
+          if (!s) throw new NeedsInput("Mark a known length with two taps.", "scale");
           edgeResult = measureEdge({
             imageWidth: still.width,
             imageHeight: still.height,
@@ -428,7 +504,7 @@ export function mountApp(root: HTMLElement): void {
           });
           notesEl.innerHTML = [...edgeResult.notes, `Scale: ${s.source}.`].map((n) => `<li>${escapeText(n)}</li>`).join("");
         } else if (kind === "tilt") {
-          if (!marks.object) throw new Error("Mark the object standing on the board.");
+          if (!marks.object) throw new NeedsInput("Mark the object standing on the board.", "object");
           const out = measureTip({
             object: marks.object.mask,
             objectSource: marks.object.source,
@@ -440,7 +516,7 @@ export function mountApp(root: HTMLElement): void {
           tipResult = out.prediction;
           notesEl.innerHTML = out.notes.map((n) => `<li>${escapeText(n)}</li>`).join("");
         } else {
-          if (marks.ladder.length < 2) throw new Error("Tap the ladder's foot, then its top.");
+          if (marks.ladder.length < 2) throw new NeedsInput("Tap the ladder's foot, then its top.", marks.ladder.length === 0 ? "foot" : "top");
           ladderResult = measureLadder({
             foot: marks.ladder[0],
             top: marks.ladder[1],
@@ -454,10 +530,11 @@ export function mountApp(root: HTMLElement): void {
         }
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
+        waitingFor = error instanceof NeedsInput ? error.step : null;
       }
       // The tilt check needs only the object: no table, scale or floor.
       const tilting = kind === "tilt";
-      drawStill(stillCanvas, still.canvas, {
+      lastOverlay = {
         object: marks.object?.mask,
         support: tilting ? undefined : marks.support?.mask,
         polygonDraft: marks.polygonDraft,
@@ -472,7 +549,8 @@ export function mountApp(root: HTMLElement): void {
         marginLabel: tipResult ? `tips at ${tipResult.geometry.angleDeg.toFixed(1)}°` : undefined,
         plumb: still.plumb,
         label: `${still.origin === "synthetic" ? "SYNTHETIC · " : ""}gravity: ${still.gravitySource}`,
-      });
+      };
+      redraw();
     }
     const pitchMetric = () =>
       still?.pitchDeg === null || still?.pitchDeg === undefined
@@ -511,8 +589,11 @@ export function mountApp(root: HTMLElement): void {
       ? ` predicted ${tipResult.geometry.angleDeg.toFixed(1)}° (${tipResult.p5Deg.toFixed(1)}–${tipResult.p95Deg.toFixed(1)}°)`
       : "";
     btnTiltStart.disabled = !tipResult || meter !== null;
-    if (message && still) setHint(message, "warn");
-    else renderTools();
+    // The step's own hint explains what to do. On the object and table steps a later
+    // step's "still needed" waits, so it does not cover "check the outline, then Next".
+    renderTools();
+    const stepHintCovers = waitingFor !== null && (waitingFor === tool || tool === "object" || tool === "table");
+    if (message && still && !stepHintCovers) setHint(message, "warn");
     updateAddButton();
   }
 
@@ -563,6 +644,11 @@ export function mountApp(root: HTMLElement): void {
     still = next;
     synthetic = isSynthetic;
     marks = emptyMarks();
+    samSteps = { object: [], table: [] };
+    instances = { object: [], table: [] };
+    tapMode = "add";
+    dragBox = undefined;
+    pendingPrompt = undefined;
     surveyed = null;
     surveyEl.innerHTML = "";
     sMark.classList.remove("hidden");
@@ -607,60 +693,111 @@ export function mountApp(root: HTMLElement): void {
     setHint(`SYNTHETIC scene: the phone is rolled by 6°. Expected d = ${formatLength(scene.expected.dM)}.`);
   }
 
-  async function segmentAt(point: Vec2, which: "object" | "table"): Promise<void> {
-    if (!still) return;
-    busy = true;
-    renderStatus();
-    setHint(`SAM 3.1 is outlining the ${which}…`);
-    try {
-      const out = await samAtPoint(still.dataUrl, { width: still.width, height: still.height }, point);
-      const chosen = pickMask(out.masks, "area");
-      if (!chosen) {
-        busy = false;
-        recompute();
-        setHint(`SAM 3.1 found nothing at that point (${out.latencyMs} ms). Tap again or draw it by hand.`, "warn");
-        return;
-      }
-      const mark: ObjectMark = { mask: maskFromRuns(chosen), source: "sam-3.1" };
-      if (which === "object") {
-        marks.object = mark;
-        tool = kind === "tilt" ? "object" : "table";
-      } else {
-        marks.support = mark;
-        marks.manualSupportPoint = undefined;
-        tool = marks.scaleTaps.length === 2 ? "floor" : "scale";
-      }
-      busy = false;
-      recompute();
-    } catch (error) {
-      const text = error instanceof ApiError ? error.message : String(error);
-      if (which === "object") marks.polygonDraft.push(point);
-      else marks.manualSupportPoint = point;
-      busy = false;
-      recompute();
-      setHint(`SAM 3.1 failed: ${text}. Draw it by hand instead.`, "warn");
-    } finally {
-      busy = false;
-      renderStatus();
+  function setMark(t: SamTarget, mark: ObjectMark | undefined): void {
+    if (t === "object") marks.object = mark;
+    else {
+      marks.support = mark;
+      if (mark) marks.manualSupportPoint = undefined;
     }
   }
 
-  function onTap(event: PointerEvent): void {
+  /** Sends one prompt for one target and keeps the result as a step Undo can go back from. */
+  async function runRegion(t: SamTarget, prompt: RegionPrompt): Promise<void> {
+    if (!still) return;
+    const photo = still;
+    busy = true;
+    pendingPrompt = prompt;
+    renderStatus();
+    redraw();
+    setHint(`SAM 3.1 is outlining the ${t === "object" ? "object" : "table"}…`);
+    let warning = "";
+    try {
+      const out = await samRegion(photo.dataUrl, { width: photo.width, height: photo.height }, prompt);
+      if (still !== photo) return;
+      const chosen = pickMask(out.masks, "confidence");
+      if (chosen) {
+        const mark: ObjectMark = { mask: maskFromRuns(chosen), source: "sam-3.1" };
+        samSteps[t] = [...samSteps[t], { prompt, mark }];
+        setMark(t, mark);
+      } else {
+        warning = `SAM 3.1 found nothing there (${out.latencyMs} ms). Drag a box around it, or Draw by hand.`;
+      }
+    } catch (error) {
+      warning = `SAM 3.1 failed: ${error instanceof ApiError ? error.message : String(error)}. Try again, or Draw by hand.`;
+    } finally {
+      busy = false;
+      pendingPrompt = undefined;
+      renderStatus();
+    }
+    recompute();
+    if (warning) setHint(warning, "warn");
+  }
+
+  /**
+   * A box starts the target over. With no outline yet, a tap starts one. When a
+   * concept prompt found several, a tap on another picks it without a call.
+   * Otherwise a tap adds or removes there, as the Tap adds / Tap removes switch says.
+   */
+  async function onSamGesture(t: SamTarget, g: Gesture): Promise<void> {
+    if (!still) return;
+    if (g.kind === "box") {
+      instances[t] = [];
+      tapMode = "add";
+      await runRegion(t, { box: g.box, points: [] });
+      return;
+    }
+    const p = g.point;
+    const label = tapMode === "add" ? ("positive" as const) : ("negative" as const);
+    const last = samSteps[t].at(-1);
+    if (last) {
+      const next = withPoint(last.prompt, { x: p.x, y: p.y, label });
+      if (!next) {
+        setHint(`SAM 3.1 takes up to ${MAX_PROMPT_POINTS} taps. Undo one, or drag a new box.`, "warn");
+        return;
+      }
+      await runRegion(t, next);
+      return;
+    }
+    const current = t === "object" ? marks.object : marks.support;
+    if (current?.source === "sam-3.1" && instances[t].length > 0) {
+      const i = instanceAt(instances[t].map((m) => m.mask), p);
+      if (instances[t].length > 1 && i >= 0 && instances[t][i] !== current) {
+        setMark(t, instances[t][i]);
+        recompute();
+        return;
+      }
+      // Correct the concept's outline: its box, grown to take in an added spot, and the tap.
+      const box = maskBox(current.mask, still);
+      if (box) {
+        await runRegion(t, { box: label === "positive" ? boxWith(box, p, still) : box, points: [{ x: p.x, y: p.y, label }] });
+        return;
+      }
+    }
+    instances[t] = [];
+    tapMode = "add";
+    await runRegion(t, { points: [{ x: p.x, y: p.y, label: "positive" }] });
+  }
+
+  /** Draws the photo again with the last measurement, for a box being dragged. */
+  function redraw(): void {
+    if (!still || !lastOverlay) return;
+    const st = samTarget();
+    drawStill(stillCanvas, still.canvas, {
+      ...lastOverlay,
+      dragBox,
+      prompt: pendingPrompt ?? (st ? samSteps[st].at(-1)?.prompt : undefined),
+      objectChoices: st === "object" && samSteps.object.length === 0 ? instances.object.map((m) => m.mask) : undefined,
+    });
+  }
+
+  /** A tap on the photo when SAM 3.1 is not outlining: corners, points and lengths by hand. */
+  function onTap(p: Vec2): void {
     if (!still || busy) return;
-    const p = canvasPoint(stillCanvas, event);
     switch (tool) {
       case "object":
-        if (samReady() && marks.polygonDraft.length === 0) {
-          void segmentAt(p, "object");
-          return;
-        }
         marks.polygonDraft.push(p);
         break;
       case "table":
-        if (samReady()) {
-          void segmentAt(p, "table");
-          return;
-        }
         marks.manualSupportPoint = p;
         if (!marks.manualEdge) tool = "edge";
         break;
@@ -689,6 +826,13 @@ export function mountApp(root: HTMLElement): void {
   }
 
   function undo(): void {
+    const st = tool === "object" || tool === "table" ? tool : null;
+    if (st && marks.polygonDraft.length === 0 && samSteps[st].length > 0) {
+      samSteps[st] = samSteps[st].slice(0, -1);
+      setMark(st, samSteps[st].at(-1)?.mark);
+      recompute();
+      return;
+    }
     if (marks.polygonDraft.length > 0) marks.polygonDraft.pop();
     else if (tool === "scale" && marks.scaleTaps.length > 0) marks.scaleTaps.pop();
     else if (tool === "floor" && marks.floorPoint) marks.floorPoint = undefined;
@@ -696,7 +840,11 @@ export function mountApp(root: HTMLElement): void {
     else if (tool === "table") {
       marks.support = undefined;
       marks.manualSupportPoint = undefined;
-    } else if (tool === "object") marks.object = undefined;
+      instances.table = [];
+    } else if (tool === "object") {
+      marks.object = undefined;
+      instances.object = [];
+    }
     else if (tool === "top" || tool === "foot") marks.ladder.pop();
     recompute();
   }
@@ -742,16 +890,21 @@ export function mountApp(root: HTMLElement): void {
     setHint(`SAM 3.1 is segmenting “${h.object}”${h.support ? ` and “${h.support}”` : ""}…`);
     let warning = "";
     try {
+      const toMarks = (masks: SamMaskOut[], prefer: "confidence" | "area"): ObjectMark[] =>
+        rankMasks(masks, prefer).map((m) => ({ mask: maskFromRuns(m), source: "sam-3.1" as const }));
       const obj = await samConcept(still.dataUrl, h.object);
-      const objMask = pickMask(obj.masks, "confidence");
-      if (objMask) marks.object = { mask: maskFromRuns(objMask), source: "sam-3.1" };
-      else warning = `SAM 3.1 found no “${h.object}”. Tap it with Object instead.`;
+      samSteps.object = [];
+      instances.object = toMarks(obj.masks, "confidence");
+      marks.object = instances.object[0];
+      if (!marks.object) warning = `SAM 3.1 found no “${h.object}”. Drag a box around it, or tap it.`;
       if (h.support) {
         const sup = await samConcept(still.dataUrl, h.support);
-        const supMask = pickMask(sup.masks, "area");
-        if (supMask) marks.support = { mask: maskFromRuns(supMask), source: "sam-3.1" };
+        samSteps.table = [];
+        instances.table = toMarks(sup.masks, "area");
+        if (instances.table[0]) setMark("table", instances.table[0]);
       }
-      tool = marks.scaleTaps.length === 2 ? "floor" : "scale";
+      // Check the outline first: in a cluttered photo the concept can match the wrong thing.
+      tool = "object";
     } catch (error) {
       warning = `SAM 3.1 failed: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
@@ -956,10 +1109,17 @@ export function mountApp(root: HTMLElement): void {
       try {
         stream = await startCamera(live);
         liveStage.classList.remove("hidden");
+        sensorBox.classList.remove("hidden");
         btnCapture.disabled = false;
-        const loop = () => {
+        let detailsAt = 0;
+        const loop = (now: number) => {
           if (!stream) return;
-          drawLiveOverlay(liveOverlay, live, gravity.reading());
+          const reading = gravity.reading();
+          drawLiveOverlay(liveOverlay, live, reading);
+          if (sensorBox.open && now - detailsAt > 250) {
+            detailsAt = now;
+            sensorRaw.textContent = sensorDetailsText(gravity.details(), reading);
+          }
           requestAnimationFrame(loop);
         };
         requestAnimationFrame(loop);
@@ -986,11 +1146,15 @@ export function mountApp(root: HTMLElement): void {
     if (reshooting && [...target.options].some((o) => o.value === reshooting)) target.value = reshooting;
     if (!reading) setHint("No gravity reading: the photo's vertical is assumed. Allow motion sensors for a real plumb line.", "warn");
     else if (reading.flat) setHint("The phone was nearly flat, so the plumb line is unreliable. Hold it upright and capture again.", "warn");
-    else if (Math.abs(reading.pitchDeg) > SIDE_VIEW_MAX_PITCH_DEG)
+    else if (reading.signState === "unknown")
+      setHint("The phone's gravity reading had not settled which way is down. Hold the phone upright for a second and capture again.", "warn");
+    else if (Math.abs(reading.pitchDeg) > SIDE_VIEW_MAX_PITCH_DEG) {
+      const dir = reading.pitchDeg < 0 ? " down" : " up";
       setHint(
-        `The camera was pitched ${Math.abs(reading.pitchDeg).toFixed(0)}°, so this is not a side view and distances may be foreshortened. Hold the phone level with the edge and capture again.`,
+        `The camera was looking ${Math.abs(reading.pitchDeg).toFixed(0)}°${dir}, so this is not a side view and distances may be foreshortened. Hold the phone level with the edge and capture again.`,
         "warn",
       );
+    }
   });
   $<HTMLInputElement>("#file").addEventListener("change", (event) => {
     const file = (event.target as HTMLInputElement).files?.[0];
@@ -1023,9 +1187,64 @@ export function mountApp(root: HTMLElement): void {
     const b = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-tool]");
     if (!b) return;
     tool = b.dataset.tool as Tool;
+    tapMode = "add";
+    renderTools();
+    redraw();
+  });
+  stillCanvas.addEventListener("pointerdown", (event) => {
+    if (!still || busy) return;
+    gesture = { id: event.pointerId, start: canvasPoint(stillCanvas, event) };
+    if (samTarget()) stillCanvas.setPointerCapture(event.pointerId);
+  });
+  stillCanvas.addEventListener("pointermove", (event) => {
+    if (!gesture || event.pointerId !== gesture.id || !still || !samTarget()) return;
+    const g = classifyGesture(gesture.start, canvasPoint(stillCanvas, event), still);
+    const box = g.kind === "box" ? g.box : undefined;
+    if (box || dragBox) {
+      dragBox = box;
+      redraw();
+    }
+  });
+  stillCanvas.addEventListener("pointerup", (event) => {
+    if (!gesture || event.pointerId !== gesture.id || !still) return;
+    const start = gesture.start;
+    gesture = null;
+    const dragged = dragBox !== undefined;
+    dragBox = undefined;
+    const end = canvasPoint(stillCanvas, event);
+    const st = samTarget();
+    if (st) {
+      if (!busy) void onSamGesture(st, classifyGesture(start, end, still));
+      return;
+    }
+    if (dragged) redraw();
+    onTap(end);
+    recompute();
+  });
+  stillCanvas.addEventListener("pointercancel", () => {
+    gesture = null;
+    if (dragBox) {
+      dragBox = undefined;
+      redraw();
+    }
+  });
+  btnNext.addEventListener("click", () => {
+    tapMode = "add";
+    if (tool === "object") tool = "table";
+    else if (tool === "table") tool = marks.scaleTaps.length === 2 ? "floor" : "scale";
+    recompute();
+  });
+  tapModeEl.addEventListener("click", (event) => {
+    const b = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-mode]");
+    if (!b) return;
+    tapMode = b.dataset.mode === "remove" ? "remove" : "add";
     renderTools();
   });
-  stillCanvas.addEventListener("pointerup", onTap);
+  btnHand.addEventListener("click", () => {
+    handDraw = !handDraw;
+    marks.polygonDraft = [];
+    recompute();
+  });
   $("#btn-undo").addEventListener("click", undo);
   btnClose.addEventListener("click", () => {
     if (marks.polygonDraft.length >= 3) {
@@ -1075,7 +1294,7 @@ export function mountApp(root: HTMLElement): void {
     if (!tipResult || !still) return;
     const prediction = tipResult;
     const photo = still;
-    const object = fObject.value.trim() || "object";
+    const object = $<HTMLInputElement>("#f-tilt-object").value.trim() || "object";
     meter?.stop();
     meter = new TiltMeter({
       onTilt: (deg) => {

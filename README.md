@@ -16,8 +16,9 @@ A photo alone cannot tell which way is down. A phone can: `DeviceMotionEvent.acc
 
 ## What it does
 
-1. **Capture** with a live plumb line over the camera preview, and save the gravity vector with the still. A bar under the preview shows the camera's pitch and turns red when the phone is not level with the edge (more than 15°, an assumption), because then the photo is not a side view.
-2. **Mark**: tap the object and the table (SAM 3.1 outlines them from the tap), or draw by hand. Tap both ends of a known length (A4 sheet or bank card) and, optionally, the floor below the edge.
+1. **Capture** with a live plumb line over the camera preview, and save the gravity vector with the still. The top of the preview says how far the phone is turned left or right; the plumb line corrects that, so it is only reported. The bar at the bottom and the gauge on the right show whether the camera looks up or down: green when it is within 15° of level (an assumption), amber in the last 3°, red beyond, because then the photo is not a side view. **Sensor details** under the preview shows the raw readings for a screenshot when something looks wrong.
+   Browsers have disagreed on the sign of the gravity reading (iOS Safari was reported in 2014 to send the opposite of the spec). The app does not guess from the device: while the phone is held upright the screen's bottom faces the ground, so it works the sign out from the readings, and it asks for another capture if the sign has not settled.
+2. **Mark**: drag a box around the object, or tap it, and SAM 3.1 outlines it; then the same for the table top next to it. In a cluttered photo a single tap is ambiguous (a point on a mug is also a point on the desk under it), so the box carries the intent. If the outline is off, choose **Tap adds** or **Tap removes** and tap the spot; each tap goes to SAM 3.1 with the box and the earlier taps. **Undo** steps back without another call, **Next** moves on, and **Draw by hand** is always there. Then tap both ends of a known length (A4 sheet or bank card) and, optionally, the floor below the edge.
 3. **Measure**: the centre of mass from the mask (an estimate that assumes uniform density), the anchor from the table mask, `d` with a fixed-seed Monte Carlo (1,000 draws) over mask, edge, gravity and scale errors, the drop height and the impact energy.
 4. **Assess**: Muse Spark Open calls the tools, chooses controls, and submits the table; or assess without the agent, with the same tools and fixed text. The tools suggest grades from the measurements. The supervisor confirms or changes each grade in the table, and the risk scores follow.
 5. **Fix and re-shoot**: after a control (for example moving the object inward), re-shoot the same hazard. The earlier photo shows faintly over the camera so the second photo is taken from the same spot. The table then shows the margin before and after, and both photos.
@@ -46,7 +47,7 @@ The main control for an edge hazard is a move: how far inward the object must go
 
 | Role | Model | Where |
 | --- | --- | --- |
-| Segmentation from a tap or a noun phrase | `sam-3.1` | Meta Model API, `POST /v1/responses` (image requests are unary; video goes through the Files API and streams) |
+| Segmentation from a box, taps or a noun phrase | `sam-3.1` | Meta Model API, `POST /v1/responses` (image requests are unary; video goes through the Files API and streams) |
 | Hazard survey from the photo | `meta-models/muse-spark-open-1026` | Baseten, OpenAI-compatible Chat Completions |
 | Assessment agent with tool calls | `meta-models/muse-spark-open-1026` | Baseten |
 
@@ -95,7 +96,7 @@ Without keys the app still measures and assesses locally; model features say so 
 | Leaning ladder set-up | foot about one quarter of the working length from the support, so cos(angle) = 1/4, about 75.5° | OSHA 29 CFR 1926.1053(b)(5)(i) |
 | Risk assessment duty (Korea) | find hazards, judge the risk, take measures, involve workers, keep records | Occupational Safety and Health Act Art. 36; Enforcement Rule Art. 37; MoEL Notice 2023-19 |
 
-Assumptions, always labeled as such in the app and the exports: the band edges for the suggested grades (above), the 10 cm control target, the 0.75 m default drop height, uniform density, mask and edge errors, the ±5° ladder tolerance, the 15° pitch limit for a side view, and the tilt check's jolt threshold (2 m/s²) and look-back (250 ms).
+Assumptions, always labeled as such in the app and the exports: the band edges for the suggested grades (above), the 10 cm control target, the 0.75 m default drop height, uniform density, mask and edge errors, the ±5° ladder tolerance, the 15° pitch limit for a side view, and the tilt check's jolt threshold (2 m/s²) and look-back (250 ms). The screen also uses thresholds that are assumptions, not measurements: the amber band 3° before the pitch limit, the gravity sign check (it votes only within 30° of upright and settles when 80% of the last 40 votes agree), steadiness (below 0.4 m/s² per axis for 0.3 s, lost above 0.7), and a drag of 4% of the photo's shorter side to count as a box.
 
 ## Open source used
 
